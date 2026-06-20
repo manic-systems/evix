@@ -53,12 +53,12 @@ pub struct Config {
     #[serde(default)]
     pub show_input_drvs: bool,
     /// Flake input overrides applied while locking, as `(input_path, ref)`
-    /// pairs (e.g. `("nixpkgs", "github:NixOS/nixpkgs/nixos-unstable")`). Only
+    /// pairs (e.g., `("nixpkgs", "github:NixOS/nixpkgs/nixos-unstable")`). Only
     /// meaningful for [`Input::Flake`].
     #[serde(default)]
     pub override_inputs: Vec<(String, String)>,
     /// Nix settings applied to the evaluation context before the eval state is
-    /// built, as `(key, value)` pairs (e.g.
+    /// built, as `(key, value)` pairs (e.g.,
     /// `("allow-import-from-derivation", "false")`). Equivalent to `nix`'s
     /// `--option KEY VALUE`.
     #[serde(default)]
@@ -79,8 +79,8 @@ pub struct Derivation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta: Option<serde_json::Value>,
     /// Input derivations keyed by `.drv` store path, present only when
-    /// [`Config::show_input_drvs`] is set. The value mirrors the `inputDrvs`
-    /// entry from the derivation's JSON (typically `{"outputs": [...]}`).
+    /// [`Config::show_input_drvs`] is set. The value is the output-name list for
+    /// that derivation input (e.g., `["out"]`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub input_drvs: BTreeMap<String, serde_json::Value>,
     /// Constituent attribute names for an aggregate job (Hydra
