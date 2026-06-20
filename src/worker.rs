@@ -14,6 +14,12 @@ pub fn run() -> Result<()> {
     let config = read_config()?;
     debug!("worker initialized");
 
+    // Apply Nix settings through NIX_CONFIG before the context loads its
+    // configuration. `nix_setting_set` throws C++ exceptions that unwind across
+    // the FFI boundary and abort the process, so we go through the environment,
+    // which Nix reads when the context initializes.
+    apply_nix_options(&config.nix_options);
+
     let ctx = Arc::new(Context::new().context("Nix context")?);
     let store = Arc::new(Store::open(&ctx, None).context("Nix store")?);
     let state = build_eval_state(&ctx, &store, &config)?;
@@ -70,6 +76,28 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
+/// Merge `(key, value)` Nix settings into the `NIX_CONFIG` environment variable
+/// so they are picked up when the Nix context initializes. Existing
+/// `NIX_CONFIG` content is preserved and appended to.
+fn apply_nix_options(options: &[(String, String)]) {
+    if options.is_empty() {
+        return;
+    }
+    let mut config = std::env::var("NIX_CONFIG").unwrap_or_default();
+    for (key, value) in options {
+        if !config.is_empty() && !config.ends_with('\n') {
+            config.push('\n');
+        }
+        config.push_str(key);
+        config.push_str(" = ");
+        config.push_str(value);
+    }
+    // SAFETY: called once at worker startup, before any threads are spawned.
+    unsafe {
+        std::env::set_var("NIX_CONFIG", config);
+    }
+}
+
 fn read_config() -> Result<Config> {
     let mut line = String::new();
     if std::io::stdin().lock().read_line(&mut line)? == 0 {
@@ -100,7 +128,7 @@ fn eval_root<'s>(
     auto_args: Option<&Value<'s>>,
 ) -> Result<Value<'s>> {
     match &config.input {
-        Input::Flake(flake_ref) => eval_flake(ctx, state, flake_ref),
+        Input::Flake(flake_ref) => eval_flake(ctx, state, flake_ref, &config.override_inputs),
         Input::Expr(expr) => {
             let v = state
                 .eval_from_string(expr, "<cmdline>")
@@ -120,6 +148,7 @@ fn eval_flake<'s>(
     ctx: &Arc<Context>,
     state: &'s EvalState,
     flake_ref_str: &str,
+    override_inputs: &[(String, String)],
 ) -> Result<Value<'s>> {
     use nix_bindings::flake::{
         FetchersSettings, FlakeReference, FlakeReferenceParseFlags, LockFlags, LockedFlake,
@@ -134,7 +163,15 @@ fn eval_flake<'s>(
         FlakeReference::parse(ctx, &fetchers, &flake_settings, &parse_flags, flake_ref_str)
             .context("parsing flake reference")?;
 
-    let lock_flags = LockFlags::new(ctx, &flake_settings).context("lock flags")?;
+    let mut lock_flags = LockFlags::new(ctx, &flake_settings).context("lock flags")?;
+    for (name, value) in override_inputs {
+        let (override_ref, _fragment) =
+            FlakeReference::parse(ctx, &fetchers, &flake_settings, &parse_flags, value)
+                .with_context(|| format!("parsing --override-input {name} reference {value:?}"))?;
+        lock_flags = lock_flags
+            .add_input_override(name, &override_ref)
+            .with_context(|| format!("applying --override-input {name}"))?;
+    }
     let locked = LockedFlake::lock(
         ctx,
         &fetchers,
