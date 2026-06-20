@@ -2,7 +2,7 @@
 name = "evix"
 description = "Evaluate a Nix expression and stream derivation info as JSON lines"
 edition = "2024"
-version = "0.2.0"
+version = "0.3.0"
 rust-version = "1.90.0"
 license = "EUPL-1.2"
 
