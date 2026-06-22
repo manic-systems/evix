@@ -17,17 +17,18 @@ can drive it programmatically.
 
 ## Usage
 
-Exactly one input is required:
+Exactly one input is required for `evix eval`, `evix watch`, `evix query`, and
+`evix diff`:
 
 ```bash
-evix --flake .#hydraJobs
-evix --expr 'import <nixpkgs> {}'
-evix --file ./default.nix
+evix eval --flake .#hydraJobs
+evix eval --expr 'import <nixpkgs> {}'
+evix eval --file ./default.nix
 ```
 
 ```bash
 # Evaluate the hydraJobs attribute of the patchelf flake
-$ evix --flake 'github:NixOS/patchelf#hydraJobs'
+$ evix eval --flake 'github:NixOS/patchelf#hydraJobs'
 copying path '/nix/store/jfdpyszsgvsnz68y36qi65irx7r6a52q-source' from 'https://cache.nixos.org'...
 {"attr":"tarball","attrPath":["tarball"],"drvPath":"/nix/store/dbhsb9ji8ya2js87v1q5621lx87smw3l-patchelf-tarball-0.18.0.drv","name":"patchelf-tarball-0.18.0","outputs":{"out":null},"system":"x86_64-linux"}
 {"attr":"coverage","attrPath":["coverage"],"drvPath":"/nix/store/h8fzgxxddi1470vad93j2y5s1lyxsii8-patchelf-coverage-0.18.0.drv","name":"patchelf-coverage-0.18.0","outputs":{"out":null},"system":"x86_64-linux"}
@@ -116,39 +117,30 @@ Errors are non-fatal unless `"fatal": true`:
 {"attr": "...", "attrPath": [...], "error": "...", "fatal": false}
 ```
 
-## Architecture
-
-The library splits work between a master and worker processes. The master
-maintains a queue of attribute paths, dispatches them to workers over
-stdin/stdout, and collects [`Event`](src/lib.rs) values. Workers are restarted
-automatically when they exceed the configured memory limit.
-
-The CLI is a thin wrapper around the library. When the library spawns a worker,
-it re-executes the current binary with the `EVIX_WORKER` environment variable
-set; the binary then calls the worker entrypoint.
-
 ## Library usage
 
 ```rust
-use evix::{Config, Event, Input};
+use evix::{Config, Input, Session};
+use futures_util::StreamExt;
 
 let config = Config {
     input: Input::Expr("import <nixpkgs> {}".into()),
-    auto_args: vec![],
-    force_recurse: false,
-    gc_roots_dir: None,
     workers: 4,
-    max_memory_size: 4096,
-    meta: false,
-    show_input_drvs: false,
-    override_inputs: vec![],
-    nix_options: vec![],
+    ..Config::default()
 };
 
-evix::evaluate(&config, |event| {
-    println!("{:?}", event);
-    Ok(())
-})?;
+let session = Session::open(config).await?;
+let mut events = session.stream();
+while let Some(event) = events.next().await {
+    println!("{:?}", event?);
+}
+
+let linux_jobs = session
+    .query_snapshot(evix::Filter {
+        systems: Some(vec!["x86_64-linux".into()]),
+        attr_prefix: None,
+    })
+    .await?;
 ```
 
 ## Building
@@ -157,4 +149,12 @@ Requires Rust 1.90.0+. Supported on `x86_64-linux` and `aarch64-linux`.
 
 ## License
 
-EUPL-1.2
+<!-- markdownlint-disable MD059 -->
+
+[here]: https://interoperable-europe.ec.europa.eu/sites/default/files/custom-page/attachment/eupl_v1.2_en.pdf
+
+This project is made available under European Union Public Licence (EUPL)
+version 1.2. See [LICENSE](LICENSE) for more details on the exact conditions. An
+online copy is provided [here].
+
+<!-- markdownlint-enable MD059 -->
