@@ -1,25 +1,27 @@
-use std::{
-  collections::BTreeMap,
-  path::PathBuf,
-  sync::{Arc, Mutex, atomic::AtomicBool},
-};
+use std::{collections::BTreeMap, path::PathBuf};
 
-use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
-use tracing::debug;
 
+mod async_master;
 mod eval;
-mod master;
+pub mod json;
+mod remote;
+mod run;
+mod serde_config;
+mod session;
+mod state;
+mod watch;
 mod worker;
 
-/// Environment variable used to distinguish worker subprocesses spawned by
-/// [`evaluate`]. A binary that re-executes itself to host workers should check
+pub use session::Session;
+
+/// Environment variable used to distinguish worker subprocesses spawned by a
+/// [`Session`]. A binary that re-executes itself to host workers should check
 /// this variable and call [`run_worker`] when it is set.
 pub const WORKER_ENV: &str = "EVIX_WORKER";
 
 /// Input source for a Nix evaluation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone)]
 pub enum Input {
   Flake(String),
   Expr(String),
@@ -27,8 +29,7 @@ pub enum Input {
 }
 
 /// Argument passed to a Nix function parameter.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone)]
 pub enum AutoArg {
   Expr(String),
   Str(String),
@@ -36,9 +37,17 @@ pub enum AutoArg {
 
 /// Configuration for an evaluation run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Config {
+  #[serde(with = "serde_config::input")]
   pub input:           Input,
+  #[serde(with = "serde_config::auto_args")]
   pub auto_args:       Vec<(String, AutoArg)>,
+  /// Recurse into all attrsets, ignoring `recurseForDerivations`.
+  ///
+  /// This remains part of evix's compatibility surface even though the
+  /// redesigned API keeps it out of the minimal example config.
+  #[serde(default)]
   pub force_recurse:   bool,
   pub gc_roots_dir:    Option<PathBuf>,
   pub workers:         usize,
@@ -64,6 +73,39 @@ pub struct Config {
   /// `--option KEY VALUE`.
   #[serde(default)]
   pub nix_options:     Vec<(String, String)>,
+  /// Enable file watching for long-lived sessions.
+  #[serde(default)]
+  pub watch:           bool,
+  /// SSH remotes available to the master.
+  #[serde(default)]
+  pub remotes:         Vec<Remote>,
+}
+
+impl Default for Config {
+  fn default() -> Self {
+    Self {
+      input:           Input::Expr("{}".into()),
+      auto_args:       Vec::new(),
+      force_recurse:   false,
+      gc_roots_dir:    None,
+      workers:         1,
+      max_memory_size: 4096,
+      meta:            false,
+      show_input_drvs: false,
+      override_inputs: Vec::new(),
+      nix_options:     Vec::new(),
+      watch:           false,
+      remotes:         Vec::new(),
+    }
+  }
+}
+
+/// SSH remote worker pool configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Remote {
+  pub host:    String,
+  pub systems: Vec<String>,
+  pub workers: usize,
 }
 
 /// A derivation emitted by evaluation.
@@ -101,6 +143,22 @@ pub struct EvalError {
   pub fatal:     bool,
 }
 
+/// Complete change set between two evaluations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Diff {
+  pub added:   Vec<Derivation>,
+  pub removed: Vec<Derivation>,
+  pub errors:  Vec<EvalError>,
+}
+
+/// Synchronous query filter over a session's warm evaluation graph.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Filter {
+  pub systems:     Option<Vec<String>>,
+  pub attr_prefix: Option<Vec<String>>,
+}
+
 /// Event produced while traversing a Nix expression.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -132,72 +190,6 @@ impl Event {
       Event::Error(e) => &e.attr_path,
     }
   }
-}
-
-/// Run an evaluation and deliver each event to `sink`.
-///
-/// The implementation uses worker subprocesses to isolate evaluation memory.
-/// Each worker re-executes the current binary; the binary must call
-/// [`run_worker`] when the [`WORKER_ENV`] environment variable is set.
-///
-/// ```no_run
-/// use evix::{Config, Event, Input};
-///
-/// let config = Config {
-///   input:           Input::Expr("import <nixpkgs> {}".into()),
-///   auto_args:       vec![],
-///   force_recurse:   false,
-///   gc_roots_dir:    None,
-///   workers:         4,
-///   max_memory_size: 4096,
-///   meta:            false,
-///   show_input_drvs: false,
-///   override_inputs: vec![],
-///   nix_options:     vec![],
-/// };
-///
-/// evix::evaluate(&config, |event| {
-///   println!("{:?}", event);
-///   Ok(())
-/// })
-/// .unwrap();
-/// ```
-pub fn evaluate<F>(config: &Config, sink: F) -> anyhow::Result<()>
-where
-  F: FnMut(&Event) -> anyhow::Result<()> + Send + 'static,
-{
-  evaluate_cancellable(config, &Arc::new(AtomicBool::new(false)), sink)
-}
-
-/// Like [`evaluate`], but observes a cancellation flag.
-///
-/// Setting `cancel` makes the master stop dispatching work and tell its workers
-/// to exit. Cancellation is cooperative: a worker already evaluating an
-/// attribute finishes it before observing the request, so a caller can enforce
-/// a wall-clock timeout without leaking worker processes.
-///
-/// # Errors
-///
-/// Returns an error if a worker reports a fatal evaluation error, if a worker
-/// process fails unexpectedly, or if `sink` returns an error.
-pub fn evaluate_cancellable<F>(
-  config: &Config,
-  cancel: &Arc<AtomicBool>,
-  sink: F,
-) -> anyhow::Result<()>
-where
-  F: FnMut(&Event) -> anyhow::Result<()> + Send + 'static,
-{
-  debug!("evaluating input, {} workers", config.workers);
-
-  if let Some(dir) = &config.gc_roots_dir {
-    std::fs::create_dir_all(dir)
-      .with_context(|| format!("creating gc-roots dir {dir:?}"))?;
-    debug!("ensured gc-roots directory exists");
-  }
-
-  let sink = Arc::new(Mutex::new(sink));
-  master::run(config, cancel, sink)
 }
 
 /// Worker entrypoint.
