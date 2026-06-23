@@ -2,9 +2,12 @@ mod args;
 
 use std::{
   env,
+  future::Future,
+  io,
   io::{BufRead, BufReader, Write},
   os::unix::net::UnixStream,
   path::PathBuf,
+  process,
 };
 
 use anyhow::{Context as _, Result, bail};
@@ -17,15 +20,37 @@ use serde_json::json;
 use tokio::runtime::Builder;
 use tracing::{info, warn};
 
-fn main() -> Result<()> {
+fn main() {
   if env::var(WORKER_ENV).is_ok() {
     init_tracing_subscriber(0);
-    return evix::run_worker();
+    if let Err(err) = evix::run_worker() {
+      eprintln!("Error: {err:?}");
+      process::exit(1);
+    }
+    return;
   }
 
-  let (verbose, plan) = parse_plan()?;
+  if let Err(err) = run_cli() {
+    eprintln!("{err:?}");
+    process::exit(1);
+  }
+}
+
+fn run_cli() -> color_eyre::Result<()> {
+  color_eyre::install()?;
+
+  let (verbose, plan) = parse_plan().map_err(report)?;
   init_tracing_subscriber(verbose);
-  run_plan(plan)
+  run_plan(plan).map_err(report)
+}
+
+fn report(err: anyhow::Error) -> color_eyre::Report {
+  let mut message = err.to_string();
+  for cause in err.chain().skip(1) {
+    message.push_str("\n\nCaused by:\n    ");
+    message.push_str(&cause.to_string());
+  }
+  color_eyre::eyre::eyre!("{message}")
 }
 
 fn run_plan(plan: CommandPlan) -> Result<()> {
@@ -71,6 +96,9 @@ fn run_plan(plan: CommandPlan) -> Result<()> {
     CommandPlan::Daemon { socket, foreground } => {
       daemon::run(daemon::socket_path(socket), foreground)
     },
+    CommandPlan::Worker { listen } => {
+      with_runtime(evix::serve_remote_worker(&listen))
+    },
   }
 }
 
@@ -90,7 +118,9 @@ fn run_client_or_local(
     Err(err)
       if matches!(
         err.kind(),
-        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+        io::ErrorKind::NotFound
+          | io::ErrorKind::ConnectionRefused
+          | io::ErrorKind::PermissionDenied
       ) =>
     {
       run_fallback(fallback)
@@ -154,7 +184,8 @@ fn run_daemon_request(mut stream: UnixStream, request: &Request) -> Result<()> {
 fn run_local_eval(config: &Config) -> Result<()> {
   info!(
     workers = config.workers,
-    "starting in-process evix evaluation"
+    remotes = config.remotes.len(),
+    "starting evix evaluation"
   );
   with_runtime(async {
     let session = Session::open(config.clone()).await?;
@@ -191,9 +222,7 @@ fn run_local_watch(config: &Config) -> Result<()> {
   })
 }
 
-fn with_runtime<T>(
-  future: impl std::future::Future<Output = Result<T>>,
-) -> Result<T> {
+fn with_runtime<T>(future: impl Future<Output = Result<T>>) -> Result<T> {
   Builder::new_current_thread()
     .enable_io()
     .enable_time()
@@ -210,7 +239,7 @@ fn init_tracing_subscriber(verbose: u8) {
   };
 
   tracing_subscriber::fmt()
-    .with_writer(std::io::stderr)
+    .with_writer(io::stderr)
     .with_target(false)
     .with_env_filter(
       tracing_subscriber::EnvFilter::try_from_default_env()
