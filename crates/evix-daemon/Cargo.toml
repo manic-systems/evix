@@ -1,22 +1,22 @@
 [package]
-name = "evix-daemon"
-description = "Unix socket daemon for evix"
-edition.workspace = true
-version.workspace = true
+name                   = "evix-daemon"
+description            = "Unix socket daemon for evix"
+edition.workspace      = true
+version.workspace      = true
 rust-version.workspace = true
-license.workspace = true
-repository.workspace = true
+license.workspace      = true
+repository.workspace   = true
 
 [dependencies]
-anyhow.workspace = true
-evix.workspace = true
+anyhow.workspace        = true
+evix.workspace          = true
 evix-protocol.workspace = true
-futures-util.workspace = true
-libc.workspace = true
-pound.workspace = true
-serde_json.workspace = true
-tokio.workspace = true
-tracing.workspace = true
+futures-util.workspace  = true
+libc.workspace          = true
+pound.workspace         = true
+serde_json.workspace    = true
+tokio.workspace         = true
+tracing.workspace       = true
 
 [[bin]]
 name = "evixd"

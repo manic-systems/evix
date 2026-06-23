@@ -1,13 +1,13 @@
 [package]
-name = "evix-protocol"
-description = "NDJSON daemon protocol types for evix"
-edition.workspace = true
-version.workspace = true
+name                   = "evix-protocol"
+description            = "Daemon and worker protocol types for evix"
+edition.workspace      = true
+version.workspace      = true
 rust-version.workspace = true
-license.workspace = true
-repository.workspace = true
+license.workspace      = true
+repository.workspace   = true
 
 [dependencies]
-evix.workspace = true
-serde.workspace = true
+evix.workspace       = true
+serde.workspace      = true
 serde_json.workspace = true

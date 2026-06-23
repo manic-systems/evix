@@ -3,6 +3,7 @@
   rustPlatform,
   glibc,
   nixVersions,
+  capnproto,
   pkg-config,
   rustc,
 }: let
@@ -28,12 +29,14 @@ in
 
     cargoLock.lockFile = "${finalAttrs.src}/Cargo.lock";
     cargoBuildFlags = ["-p" "evix-cli" "-p" "evix-daemon"];
-    cargoTestFlags = finalAttrs.cargoBuildFlags;
+    cargoTestFlags =
+      ["-p" "evix" "-p" "evix-cli" "-p" "evix-daemon" "--lib" "--bins"];
     useNextest = true;
 
     enableParallelBuilding = true;
     strictDeps = true;
     nativeBuildInputs = [
+      capnproto
       pkg-config
     ];
 
@@ -49,7 +52,7 @@ in
 
     meta = {
       description = "Evaluate a Nix expression and stream derivation info as JSON lines";
-      homepage = "https://github.com/manic-systems/circus";
+      homepage = "https://github.com/manic-systems/evix";
       mainProgram = "evix";
       license = lib.licenses.eupl12;
       maintainers = with lib.maintainers; [NotAShelf];

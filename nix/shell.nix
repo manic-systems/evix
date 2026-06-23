@@ -8,6 +8,7 @@
   clippy,
   taplo,
   pkg-config,
+  capnproto,
   nixVersions,
   glibc,
 }: let
@@ -19,6 +20,7 @@ in
 
     strictDeps = true;
     nativeBuildInputs = [
+      capnproto
       pkg-config
       cargo
       rustc
