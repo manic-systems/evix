@@ -1,9 +1,11 @@
 use std::{
   collections::HashMap,
+  env,
   fs,
   io::{BufRead, BufReader, Write},
   os::unix::net::{UnixListener, UnixStream},
   path::{Path, PathBuf},
+  process,
   sync::{Arc, Mutex},
   thread,
 };
@@ -55,7 +57,7 @@ pub fn default_socket_path() -> PathBuf {
 
 pub fn socket_path(flag: Option<PathBuf>) -> PathBuf {
   flag
-    .or_else(|| std::env::var_os("EVIX_SOCKET").map(PathBuf::from))
+    .or_else(|| env::var_os("EVIX_SOCKET").map(PathBuf::from))
     .unwrap_or_else(default_socket_path)
 }
 
@@ -103,7 +105,7 @@ fn daemonize(socket: &Path) -> Result<()> {
   }
   if pid > 0 {
     println!("{}", socket.display());
-    std::process::exit(0);
+    process::exit(0);
   }
 
   if unsafe { libc::setsid() } < 0 {
@@ -115,20 +117,19 @@ fn daemonize(socket: &Path) -> Result<()> {
     bail!("second fork failed");
   }
   if pid > 0 {
-    std::process::exit(0);
+    process::exit(0);
   }
 
-  if let Some(pid_path) = pid_path() {
-    fs::write(&pid_path, std::process::id().to_string())
-      .with_context(|| format!("writing pid file {}", pid_path.display()))?;
-  }
+  let pid_path = pid_path();
+  fs::write(&pid_path, process::id().to_string())
+    .with_context(|| format!("writing pid file {}", pid_path.display()))?;
 
   Ok(())
 }
 
-fn pid_path() -> Option<PathBuf> {
+fn pid_path() -> PathBuf {
   let uid = unsafe { libc::geteuid() };
-  Some(PathBuf::from(format!("/run/user/{uid}/evix.pid")))
+  PathBuf::from(format!("/run/user/{uid}/evix.pid"))
 }
 
 fn handle_connection(
