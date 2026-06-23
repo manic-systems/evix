@@ -38,7 +38,7 @@ in {
         ExecStart = "${lib.getExe' cfg.package "evixd"} --foreground";
         Restart = "on-failure";
         Environment = lib.optional (cfg.daemon.socket != null) [
-          "EVIX_SOCKET = ${cfg.daemon.socket}"
+          "EVIX_SOCKET=${cfg.daemon.socket}"
         ];
 
         WorkingDirectory = "";

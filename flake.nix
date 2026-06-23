@@ -37,6 +37,14 @@
       default = pkgs.callPackage ./nix/shell.nix {};
     });
 
+    checks = forEachSystem (system: let
+      pkgs = pkgsForEach system;
+    in {
+      eval = pkgs.callPackage ./nix/tests/eval.nix {
+        evix = self.packages.${system}.evix;
+      };
+    });
+
     hydraJobs = self.packages;
   };
 }
