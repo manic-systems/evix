@@ -97,12 +97,8 @@ where
     "watch" => {
       let (verbose, args, extra) = parse_eval_args(rest)?;
       ensure_no_query_flags(&extra)?;
-      let config = eval_config(args)?;
       Ok((verbose, CommandPlan::Watch {
-        config:     Config {
-          watch: true,
-          ..config
-        },
+        config:     eval_config(args)?,
         socket:     extra.socket,
         use_daemon: !extra.no_daemon,
       }))
@@ -319,7 +315,6 @@ fn eval_config(args: EvalArgs) -> Result<Config> {
     show_input_drvs: args.show_input_drvs,
     override_inputs: parse_pairs(args.override_input, "--override-input")?,
     nix_options: parse_pairs(args.option, "--option")?,
-    watch: false,
     remotes: parse_remotes(args.remote)?,
   })
 }

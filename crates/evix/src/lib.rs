@@ -81,9 +81,6 @@ pub struct Config {
   /// `--option KEY VALUE`.
   #[serde(default)]
   pub nix_options:     Vec<(String, String)>,
-  /// Enable file watching for long-lived sessions.
-  #[serde(default)]
-  pub watch:           bool,
   /// Remote worker endpoints available to the master.
   #[serde(default)]
   pub remotes:         Vec<Remote>,
@@ -102,7 +99,6 @@ impl Default for Config {
       show_input_drvs: false,
       override_inputs: Vec::new(),
       nix_options:     Vec::new(),
-      watch:           false,
       remotes:         Vec::new(),
     }
   }

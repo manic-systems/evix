@@ -16,7 +16,6 @@ use evix::{Config, Event, Session, WORKER_ENV, json as evix_json};
 use evix_daemon as daemon;
 use evix_protocol::{Request, Response};
 use futures_util::StreamExt as _;
-use serde_json::json;
 use tokio::runtime::Builder;
 use tracing::{info, warn};
 
@@ -158,21 +157,10 @@ fn run_daemon_request(mut stream: UnixStream, request: &Request) -> Result<()> {
       continue;
     }
     match serde_json::from_str(&line)? {
-      Response::Event { event } => println!("{event}"),
-      Response::Diff {
-        added,
-        removed,
-        errors,
-      } => {
-        println!(
-          "{}",
-          json!({
-            "added": added,
-            "removed": removed,
-            "errors": errors,
-          })
-        );
+      Response::Event { event } => {
+        println!("{}", evix_json::event_line(&event))
       },
+      Response::Diff { diff } => println!("{}", evix_json::diff_line(&diff)),
       Response::Done => break,
       Response::Error { message } => bail!("{message}"),
     }
@@ -205,15 +193,7 @@ fn run_local_eval(config: &Config) -> Result<()> {
 
 fn run_local_watch(config: &Config) -> Result<()> {
   with_runtime(async {
-    let session = Session::open(Config {
-      watch: true,
-      ..config.clone()
-    })
-    .await?;
-    let mut initial = session.stream();
-    while let Some(event) = initial.next().await {
-      event?;
-    }
+    let session = Session::open(config.clone()).await?;
     let mut diffs = session.watch();
     while let Some(diff) = diffs.next().await {
       println!("{}", evix_json::diff_line(&diff?));

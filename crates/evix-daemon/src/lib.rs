@@ -191,7 +191,6 @@ async fn handle_watch(
   config: Config,
 ) -> Result<()> {
   let session = state.replace_session(config).await?;
-  drain_initial(&session).await?;
   let mut diffs = session.watch();
   while let Some(diff) = diffs.next().await {
     match diff {
@@ -226,14 +225,6 @@ async fn handle_diff(
   let diff = session.diff_once().await?;
   write_response(stream, &Response::diff(&diff))?;
   write_response(stream, &Response::Done)
-}
-
-async fn drain_initial(session: &Session) -> Result<()> {
-  let mut events = session.stream();
-  while let Some(event) = events.next().await {
-    event?;
-  }
-  Ok(())
 }
 
 fn write_response(stream: &mut UnixStream, response: &Response) -> Result<()> {

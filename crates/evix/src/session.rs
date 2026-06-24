@@ -68,36 +68,17 @@ impl Session {
     let completed = Arc::clone(&self.completed);
 
     spawn_session_task(tx.clone(), async move {
-      debug!("starting session evaluation");
-      let result = run::evaluate(config, Arc::clone(&cancel), {
-        let tx = tx.clone();
-        move |event| {
-          let tx = tx.clone();
-          async move {
-            tx.unbounded_send(Ok(event))
-              .map_err(|_| anyhow!("session stream receiver was dropped"))?;
-            Ok(())
-          }
-        }
-      })
-      .await;
-
-      match result {
-        Ok((graph, errors)) => {
-          let mut state = state.write().await;
-          state.graph = graph;
-          state.errors = errors;
-          state.completed = true;
-          state.error = None;
-          completed.notify_waiters();
-          debug!("session evaluation completed");
-        },
-        Err(err) => {
-          error!(error = %err, "session evaluation failed");
-          state.write().await.error = Some(err.to_string());
-          completed.notify_waiters();
-          let _ = tx.unbounded_send(Err(err));
-        },
+      let event_tx = tx.clone();
+      if let Err(err) =
+        evaluate_initial(config, cancel, state, completed, move |event| {
+          event_tx
+            .unbounded_send(Ok(event))
+            .map_err(|_| anyhow!("session stream receiver was dropped"))?;
+          Ok(())
+        })
+        .await
+      {
+        let _ = tx.unbounded_send(Err(err));
       }
     });
 
@@ -106,7 +87,7 @@ impl Session {
 
   /// Stream diffs as inputs change.
   ///
-  /// This waits until the initial [`Self::stream`] has completed, then runs a
+  /// This starts and drains the initial evaluation when needed, then runs a
   /// fresh evaluation for each filesystem notification and diffs it against
   /// the previous warm graph.
   pub fn watch(&self) -> impl Stream<Item = Result<Diff>> + '_ {
@@ -115,8 +96,23 @@ impl Session {
     let cancel = Arc::clone(&self.cancel);
     let state = Arc::clone(&self.state);
     let completed = Arc::clone(&self.completed);
+    let start_initial = !self.used.swap(true, Ordering::AcqRel);
 
     spawn_session_task(tx.clone(), async move {
+      if start_initial
+        && let Err(err) = evaluate_initial(
+          config.clone(),
+          Arc::clone(&cancel),
+          Arc::clone(&state),
+          Arc::clone(&completed),
+          |_| Ok(()),
+        )
+        .await
+      {
+        let _ = tx.unbounded_send(Err(err));
+        return;
+      }
+
       if let Err(err) =
         watch::watch_loop(config, cancel, state, completed, tx.clone()).await
       {
@@ -129,17 +125,14 @@ impl Session {
 
   /// Query a snapshot of the warm derivation graph.
   ///
-  /// The initial stream must have been fully drained before this is called.
+  /// An initial evaluation must have completed before this is called.
   pub async fn query_snapshot(
     &self,
     filter: Filter,
   ) -> Result<Vec<Derivation>> {
     let guard = self.state.read().await;
     if !guard.completed {
-      bail!(
-        "Session::query_snapshot requires Session::stream to be fully drained \
-         first"
-      );
+      bail!("Session::query_snapshot requires a completed initial evaluation");
     }
     Ok(
       guard
@@ -161,18 +154,13 @@ impl Session {
     let previous = {
       let guard = self.state.read().await;
       if !guard.completed {
-        bail!(
-          "Session::diff_once requires Session::stream to be fully drained \
-           first"
-        );
+        bail!("Session::diff_once requires a completed initial evaluation");
       }
       guard.graph.clone()
     };
     let (graph, errors) =
-      run::evaluate(self.config.clone(), Arc::clone(&self.cancel), |_| {
-        async { Ok(()) }
-      })
-      .await?;
+      run::evaluate(self.config.clone(), Arc::clone(&self.cancel), |_| Ok(()))
+        .await?;
     let diff = diff_graphs(&previous, &graph, errors.clone());
     {
       let mut state = self.state.write().await;
@@ -197,6 +185,39 @@ impl Session {
       bail!("{error}");
     }
     bail!("session is still evaluating")
+  }
+}
+
+async fn evaluate_initial<F>(
+  config: Config,
+  cancel: Arc<AtomicBool>,
+  state: Arc<RwLock<WarmState>>,
+  completed: Arc<Notify>,
+  on_event: F,
+) -> Result<()>
+where
+  F: FnMut(Event) -> Result<()> + Send + 'static,
+{
+  debug!("starting session evaluation");
+  let result = run::evaluate(config, Arc::clone(&cancel), on_event).await;
+
+  match result {
+    Ok((graph, errors)) => {
+      let mut state = state.write().await;
+      state.graph = graph;
+      state.errors = errors;
+      state.completed = true;
+      state.error = None;
+      completed.notify_waiters();
+      debug!("session evaluation completed");
+      Ok(())
+    },
+    Err(err) => {
+      error!(error = %err, "session evaluation failed");
+      state.write().await.error = Some(err.to_string());
+      completed.notify_waiters();
+      Err(err)
+    },
   }
 }
 

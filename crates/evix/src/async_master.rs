@@ -92,8 +92,8 @@ pub async fn run<F, Fut>(
   on_event: F,
 ) -> Result<()>
 where
-  F: FnMut(Event) -> Fut + Send + 'static,
-  Fut: Future<Output = Result<()>> + Send + 'static,
+  F: FnMut(Event) -> Fut,
+  Fut: Future<Output = Result<()>>,
 {
   validate_config(&config)?;
   let specs = worker_specs(&config);
@@ -321,8 +321,8 @@ async fn coordinate<F, Fut>(
   mut on_event: F,
 ) -> Result<()>
 where
-  F: FnMut(Event) -> Fut + Send + 'static,
-  Fut: Future<Output = Result<()>> + Send + 'static,
+  F: FnMut(Event) -> Fut,
+  Fut: Future<Output = Result<()>>,
 {
   let mut idle = (0..workers.len()).collect::<VecDeque<_>>();
 

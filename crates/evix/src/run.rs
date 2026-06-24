@@ -1,11 +1,6 @@
-use std::{
-  future::Future,
-  mem,
-  sync::{Arc, atomic::AtomicBool},
-};
+use std::sync::{Arc, atomic::AtomicBool};
 
 use anyhow::Result;
-use tokio::sync::Mutex;
 
 use crate::{
   Config,
@@ -14,36 +9,22 @@ use crate::{
   state::{EvalAccumulator, EvalGraph},
 };
 
-pub async fn evaluate<F, Fut>(
+pub async fn evaluate<F>(
   config: Config,
   cancel: Arc<AtomicBool>,
-  on_event: F,
+  mut on_event: F,
 ) -> Result<(EvalGraph, Vec<EvalError>)>
 where
-  F: FnMut(Event) -> Fut + Send + 'static,
-  Fut: Future<Output = Result<()>> + Send + 'static,
+  F: FnMut(Event) -> Result<()>,
 {
-  let accumulator = Arc::new(Mutex::new(EvalAccumulator::default()));
-  let on_event = Arc::new(Mutex::new(on_event));
+  let mut accumulator = EvalAccumulator::default();
 
-  crate::async_master::run(config, Arc::clone(&cancel), {
-    let accumulator = Arc::clone(&accumulator);
-    let on_event = Arc::clone(&on_event);
-    move |event| {
-      let accumulator = Arc::clone(&accumulator);
-      let on_event = Arc::clone(&on_event);
-      async move {
-        accumulator.lock().await.record(&event);
-        let mut sink = on_event.lock().await;
-        (*sink)(event).await
-      }
-    }
+  crate::async_master::run(config, Arc::clone(&cancel), |event| {
+    accumulator.record(&event);
+    let result = on_event(event);
+    async move { result }
   })
   .await?;
 
-  let mut accumulator = accumulator.lock().await;
-  Ok((
-    mem::take(&mut accumulator.graph),
-    mem::take(&mut accumulator.errors),
-  ))
+  Ok((accumulator.graph, accumulator.errors))
 }

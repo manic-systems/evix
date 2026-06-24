@@ -1,14 +1,5 @@
-use evix::{
-  Config,
-  Derivation,
-  Diff,
-  EvalError,
-  Event,
-  Filter,
-  json as evix_json,
-};
+use evix::{Config, Derivation, Diff, Event, Filter};
 use serde::{Deserialize, Serialize};
-use serde_json::Value as Json;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -59,43 +50,27 @@ impl Request {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Response {
-  Event {
-    event: Json,
-  },
-  Diff {
-    added:   Vec<Json>,
-    removed: Vec<Json>,
-    errors:  Vec<EvalError>,
-  },
+  Event { event: Event },
+  Diff { diff: Diff },
   Done,
-  Error {
-    message: String,
-  },
+  Error { message: String },
 }
 
 impl Response {
   pub fn event(event: &Event) -> Self {
     Self::Event {
-      event: evix_json::event_value(event),
+      event: event.clone(),
     }
   }
 
   pub fn derivation_event(derivation: &Derivation) -> Self {
     Self::Event {
-      event: evix_json::derivation_value(derivation),
+      event: Event::Derivation(derivation.clone()),
     }
   }
 
   pub fn diff(diff: &Diff) -> Self {
-    Self::Diff {
-      added:   diff.added.iter().map(evix_json::derivation_value).collect(),
-      removed: diff
-        .removed
-        .iter()
-        .map(evix_json::derivation_value)
-        .collect(),
-      errors:  diff.errors.clone(),
-    }
+    Self::Diff { diff: diff.clone() }
   }
 
   pub fn error(message: impl Into<String>) -> Self {

@@ -31,7 +31,7 @@ pub async fn watch_loop(
   completed: Arc<Notify>,
   tx: futures_mpsc::UnboundedSender<Result<Diff>>,
 ) -> Result<()> {
-  wait_for_initial_stream(&cancel, &state, &completed).await?;
+  wait_for_initial_evaluation(&cancel, &state, &completed).await?;
 
   let paths = watched_paths(&config)?;
   if paths.is_empty() {
@@ -63,10 +63,8 @@ pub async fn watch_loop(
         debounce_watch_events(&mut watch_rx).await;
         let previous = state.read().await.graph.clone();
         let (graph, errors) =
-          run::evaluate(config.clone(), Arc::clone(&cancel), |_| {
-            async { Ok(()) }
-          })
-          .await?;
+          run::evaluate(config.clone(), Arc::clone(&cancel), |_| Ok(()))
+            .await?;
         let diff = diff_graphs(&previous, &graph, errors.clone());
         {
           let mut state = state.write().await;
@@ -90,7 +88,7 @@ pub async fn watch_loop(
   Ok(())
 }
 
-async fn wait_for_initial_stream(
+async fn wait_for_initial_evaluation(
   cancel: &AtomicBool,
   state: &RwLock<WarmState>,
   completed: &Notify,
@@ -108,7 +106,7 @@ async fn wait_for_initial_stream(
     }
     notified.await;
   }
-  bail!("session dropped before initial stream completed")
+  bail!("session dropped before initial evaluation completed")
 }
 
 async fn wait_for_cancel(cancel: Arc<AtomicBool>) {
