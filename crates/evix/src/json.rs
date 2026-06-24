@@ -31,6 +31,9 @@ pub fn derivation_value(d: &Derivation) -> Json {
   if let Some(constituents) = &d.constituents {
     obj.insert("constituents".into(), json!(constituents));
   }
+  if let Some(error) = &d.gc_root_error {
+    obj.insert("gcRootError".into(), json!(error));
+  }
   Json::Object(obj)
 }
 
@@ -144,7 +147,10 @@ fn parse_derivation(value: Json) -> Result<Derivation> {
     meta: value.get("meta").cloned(),
     input_drvs,
     constituents,
-    gc_root_error: None,
+    gc_root_error: value
+      .get("gcRootError")
+      .and_then(Json::as_str)
+      .map(str::to_owned),
   })
 }
 
@@ -174,7 +180,7 @@ mod tests {
   #[test]
   fn parses_flat_derivation_event() {
     let event = parse_event_line(
-      r#"{"attr":"pkg","attrPath":["pkg"],"name":"pkg","system":"x86_64-linux","drvPath":"/nix/store/pkg.drv","outputs":{"out":null}}"#,
+      r#"{"attr":"pkg","attrPath":["pkg"],"name":"pkg","system":"x86_64-linux","drvPath":"/nix/store/pkg.drv","outputs":{"out":null},"gcRootError":"link failed"}"#,
     )
     .unwrap();
 
@@ -184,6 +190,7 @@ mod tests {
     assert_eq!(drv.attr, "pkg");
     assert_eq!(drv.system, "x86_64-linux");
     assert_eq!(drv.outputs.get("out"), Some(&None));
+    assert_eq!(drv.gc_root_error.as_deref(), Some("link failed"));
   }
 
   #[test]
