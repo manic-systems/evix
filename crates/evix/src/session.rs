@@ -2,6 +2,7 @@ use std::{
   future::Future,
   sync::{
     Arc,
+    Mutex,
     atomic::{AtomicBool, Ordering},
   },
 };
@@ -33,7 +34,14 @@ pub struct Session {
   cancel:    Arc<AtomicBool>,
   state:     Arc<RwLock<WarmState>>,
   completed: Arc<Notify>,
-  used:      AtomicBool,
+  initial:   Arc<Mutex<InitialEvaluation>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InitialEvaluation {
+  Idle,
+  Running,
+  Finished,
 }
 
 impl Session {
@@ -44,7 +52,7 @@ impl Session {
       cancel: Arc::new(AtomicBool::new(false)),
       state: Arc::new(RwLock::new(WarmState::default())),
       completed: Arc::new(Notify::new()),
-      used: AtomicBool::new(false),
+      initial: Arc::new(Mutex::new(InitialEvaluation::Idle)),
     })
   }
 
@@ -55,7 +63,7 @@ impl Session {
   pub fn stream(&self) -> impl Stream<Item = Result<Event>> + '_ {
     let (tx, rx) = futures_mpsc::unbounded();
 
-    if self.used.swap(true, Ordering::AcqRel) {
+    if !self.start_initial_evaluation() {
       let _ = tx.unbounded_send(Err(anyhow!(
         "session stream has already been consumed"
       )));
@@ -66,21 +74,40 @@ impl Session {
     let cancel = Arc::clone(&self.cancel);
     let state = Arc::clone(&self.state);
     let completed = Arc::clone(&self.completed);
+    let initial = Arc::clone(&self.initial);
+    let spawn_state = Arc::clone(&state);
+    let spawn_completed = Arc::clone(&completed);
+    let spawn_initial = Arc::clone(&initial);
 
-    spawn_session_task(tx.clone(), async move {
-      let event_tx = tx.clone();
-      if let Err(err) =
-        evaluate_initial(config, cancel, state, completed, move |event| {
-          event_tx
-            .unbounded_send(Ok(event))
-            .map_err(|_| anyhow!("session stream receiver was dropped"))?;
-          Ok(())
-        })
+    spawn_session_task(
+      tx.clone(),
+      async move {
+        let event_tx = tx.clone();
+        if let Err(err) = evaluate_initial(
+          config,
+          cancel,
+          Arc::clone(&state),
+          Arc::clone(&completed),
+          move |event| {
+            event_tx
+              .unbounded_send(Ok(event))
+              .map_err(|_| anyhow!("session stream receiver was dropped"))?;
+            Ok(())
+          },
+        )
         .await
-      {
-        let _ = tx.unbounded_send(Err(err));
-      }
-    });
+        {
+          let message = err.to_string();
+          record_initial_error(&state, &completed, &initial, message).await;
+          let _ = tx.unbounded_send(Err(err));
+        } else {
+          finish_initial_evaluation(&initial);
+        }
+      },
+      spawn_state,
+      spawn_completed,
+      spawn_initial,
+    );
 
     rx
   }
@@ -96,29 +123,43 @@ impl Session {
     let cancel = Arc::clone(&self.cancel);
     let state = Arc::clone(&self.state);
     let completed = Arc::clone(&self.completed);
-    let start_initial = !self.used.swap(true, Ordering::AcqRel);
+    let initial = Arc::clone(&self.initial);
+    let start_initial = self.start_initial_evaluation();
+    let spawn_state = Arc::clone(&state);
+    let spawn_completed = Arc::clone(&completed);
+    let spawn_initial = Arc::clone(&initial);
 
-    spawn_session_task(tx.clone(), async move {
-      if start_initial
-        && let Err(err) = evaluate_initial(
-          config.clone(),
-          Arc::clone(&cancel),
-          Arc::clone(&state),
-          Arc::clone(&completed),
-          |_| Ok(()),
-        )
-        .await
-      {
-        let _ = tx.unbounded_send(Err(err));
-        return;
-      }
+    spawn_session_task(
+      tx.clone(),
+      async move {
+        if start_initial
+          && let Err(err) = evaluate_initial(
+            config.clone(),
+            Arc::clone(&cancel),
+            Arc::clone(&state),
+            Arc::clone(&completed),
+            |_| Ok(()),
+          )
+          .await
+        {
+          let message = err.to_string();
+          record_initial_error(&state, &completed, &initial, message).await;
+          let _ = tx.unbounded_send(Err(err));
+          return;
+        } else if start_initial {
+          finish_initial_evaluation(&initial);
+        }
 
-      if let Err(err) =
-        watch::watch_loop(config, cancel, state, completed, tx.clone()).await
-      {
-        let _ = tx.unbounded_send(Err(err));
-      }
-    });
+        if let Err(err) =
+          watch::watch_loop(config, cancel, state, completed, tx.clone()).await
+        {
+          let _ = tx.unbounded_send(Err(err));
+        }
+      },
+      spawn_state,
+      spawn_completed,
+      spawn_initial,
+    );
 
     rx
   }
@@ -186,6 +227,20 @@ impl Session {
     }
     bail!("session is still evaluating")
   }
+
+  fn start_initial_evaluation(&self) -> bool {
+    let mut initial = self
+      .initial
+      .lock()
+      .expect("session initial evaluation state poisoned");
+    match *initial {
+      InitialEvaluation::Idle => {
+        *initial = InitialEvaluation::Running;
+        true
+      },
+      InitialEvaluation::Running | InitialEvaluation::Finished => false,
+    }
+  }
 }
 
 async fn evaluate_initial<F>(
@@ -221,18 +276,43 @@ where
   }
 }
 
+fn finish_initial_evaluation(initial: &Mutex<InitialEvaluation>) {
+  *initial
+    .lock()
+    .expect("session initial evaluation state poisoned") =
+    InitialEvaluation::Finished;
+}
+
+async fn record_initial_error(
+  state: &RwLock<WarmState>,
+  completed: &Notify,
+  initial: &Mutex<InitialEvaluation>,
+  error: String,
+) {
+  state.write().await.error = Some(error);
+  completed.notify_waiters();
+  finish_initial_evaluation(initial);
+}
+
 fn spawn_session_task<T: Send + 'static>(
   tx: futures_mpsc::UnboundedSender<Result<T>>,
   future: impl Future<Output = ()> + Send + 'static,
+  state: Arc<RwLock<WarmState>>,
+  completed: Arc<Notify>,
+  initial: Arc<Mutex<InitialEvaluation>>,
 ) {
   match tokio::runtime::Handle::try_current() {
     Ok(handle) => {
       handle.spawn(future);
     },
     Err(_) => {
-      let _ = tx.unbounded_send(Err(anyhow!(
-        "Session streams require an active Tokio runtime"
-      )));
+      let message = "Session streams require an active Tokio runtime";
+      if let Ok(mut state) = state.try_write() {
+        state.error = Some(message.into());
+      }
+      finish_initial_evaluation(&initial);
+      completed.notify_waiters();
+      let _ = tx.unbounded_send(Err(anyhow!(message)));
     },
   }
 }
@@ -241,5 +321,42 @@ impl Drop for Session {
   fn drop(&mut self) {
     self.cancel.store(true, Ordering::Relaxed);
     self.completed.notify_waiters();
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn spawn_without_runtime_records_initial_error() {
+    let (tx, _rx): (futures_mpsc::UnboundedSender<Result<Event>>, _) =
+      futures_mpsc::unbounded();
+    let state = Arc::new(RwLock::new(WarmState::default()));
+    let completed = Arc::new(Notify::new());
+    let initial = Arc::new(Mutex::new(InitialEvaluation::Running));
+
+    spawn_session_task(
+      tx,
+      async {},
+      Arc::clone(&state),
+      Arc::clone(&completed),
+      Arc::clone(&initial),
+    );
+
+    assert_eq!(
+      *initial
+        .lock()
+        .expect("session initial evaluation state poisoned"),
+      InitialEvaluation::Finished
+    );
+    assert_eq!(
+      state
+        .try_read()
+        .expect("warm state should not be locked")
+        .error
+        .as_deref(),
+      Some("Session streams require an active Tokio runtime")
+    );
   }
 }

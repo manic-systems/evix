@@ -365,8 +365,9 @@ async fn example() -> anyhow::Result<()> {
 }
 ```
 
-`Session::stream` is single-use. Drain it once to populate the warm graph, then
-call `query_snapshot`, `diff_once`, or `watch` on the same session.
+`Session::stream` is single-use. Drain it once to populate the warm graph before
+calling `query_snapshot` or `diff_once`; `Session::watch` can start and drain
+the initial evaluation itself before emitting diffs.
 
 If your binary re-executes itself to host workers, check `evix::WORKER_ENV` on
 startup and call `evix::run_worker()` when it is set. The `evix` CLI does this
