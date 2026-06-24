@@ -34,11 +34,6 @@ pub async fn watch_loop(
   wait_for_initial_evaluation(&cancel, &state, &completed).await?;
 
   let paths = watched_paths(&config)?;
-  if paths.is_empty() {
-    wait_for_cancel(cancel).await;
-    return Ok(());
-  }
-
   let (watch_tx, mut watch_rx) = tokio_mpsc::unbounded_channel();
   let mut watcher: RecommendedWatcher =
     notify::recommended_watcher(move |result| {
@@ -109,12 +104,6 @@ async fn wait_for_initial_evaluation(
   bail!("session dropped before initial evaluation completed")
 }
 
-async fn wait_for_cancel(cancel: Arc<AtomicBool>) {
-  while !cancel.load(Ordering::Relaxed) {
-    time::sleep(Duration::from_millis(200)).await;
-  }
-}
-
 async fn debounce_watch_events(
   watch_rx: &mut tokio_mpsc::UnboundedReceiver<notify::Result<notify::Event>>,
 ) {
@@ -125,7 +114,7 @@ async fn debounce_watch_events(
 fn watched_paths(config: &Config) -> Result<Vec<PathBuf>> {
   match &config.input {
     Input::File(path) => Ok(vec![path.clone()]),
-    Input::Expr(_) => Ok(Vec::new()),
+    Input::Expr(_) => bail!("watch requires a file or local flake input"),
     Input::Flake(reference) => watched_flake_paths(reference),
   }
 }
@@ -201,7 +190,8 @@ fn local_path_inputs(root: &Path) -> Result<Vec<PathBuf>> {
 mod tests {
   use std::path::PathBuf;
 
-  use super::local_flake_root;
+  use super::{local_flake_root, watched_paths};
+  use crate::{Config, Input};
 
   #[test]
   fn local_flake_root_accepts_path_refs_and_fragments() {
@@ -211,5 +201,17 @@ mod tests {
       PathBuf::from("/repo")
     );
     assert!(local_flake_root("github:owner/repo#jobs").is_none());
+  }
+
+  #[test]
+  fn watched_paths_rejects_expression_input() {
+    let error = watched_paths(&Config {
+      input: Input::Expr("{}".into()),
+      ..Config::default()
+    })
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("watch requires a file or local flake input"));
   }
 }

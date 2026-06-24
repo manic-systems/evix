@@ -97,9 +97,13 @@ where
     "watch" => {
       let (verbose, args, extra) = parse_eval_args(rest)?;
       ensure_no_query_flags(&extra)?;
+      let config = eval_config(args)?;
+      if matches!(config.input, Input::Expr(_)) {
+        bail!("watch requires --flake or --file input");
+      }
       Ok((verbose, CommandPlan::Watch {
-        config:     eval_config(args)?,
-        socket:     extra.socket,
+        config,
+        socket: extra.socket,
         use_daemon: !extra.no_daemon,
       }))
     },
@@ -462,5 +466,15 @@ mod tests {
       AutoArg::Str(value) => assert_eq!(value, "--not-a-flag"),
       AutoArg::Expr(value) => panic!("expected string arg, got expr {value:?}"),
     }
+  }
+
+  #[test]
+  fn watch_rejects_expr_input() {
+    let error = match parse_plan_from(["watch", "--expr", "{}"]) {
+      Ok(_) => panic!("watch expr should fail"),
+      Err(error) => error.to_string(),
+    };
+
+    assert!(error.contains("watch requires --flake or --file input"));
   }
 }
