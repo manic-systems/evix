@@ -203,11 +203,12 @@ Like `query`, `diff` requires an existing warm daemon session.
 | `--gc-roots-dir DIR`          | Register GC root symlinks for evaluated derivations         |
 | `--socket PATH`               | Daemon socket path for daemon-backed commands               |
 | `-v`, `--verbose`             | Increase logging verbosity, repeat for trace logs           |
+| `-q`, `--quiet`               | Decrease logging verbosity, repeat to suppress more logs    |
 
 <!-- markdownlint-enable MD013 -->
 
 Logs are written to stderr. JSON events are written to stdout. `RUST_LOG`
-overrides `--verbose` when set.
+overrides `--verbose` and `--quiet` when set.
 
 ## Distributed Evaluation
 
@@ -373,7 +374,7 @@ If your binary re-executes itself to host workers, check `evix::WORKER_ENV` on
 startup and call `evix::run_worker()` when it is set. The `evix` CLI does this
 already.
 
-## Development
+## Hacking
 
 Evix is built with the latest stable Rust, targeting the 2024 edition. Those
 will no doubt change but for the time being the requirements are as follows:
