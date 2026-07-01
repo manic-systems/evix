@@ -383,6 +383,11 @@ async fn example() -> anyhow::Result<()> {
 calling `query_snapshot` or `diff_once`; `Session::watch` can start and drain
 the initial evaluation itself before emitting diffs.
 
+Serializing `evix::Event` directly with serde preserves the Rust enum shape,
+such as `{ "derivation": { ... } }` or `{ "attr_set": { ... } }`. Use
+`evix::json::event_value` or `evix::json::event_line` when you want the
+flattened CLI-compatible NDJSON shape shown above.
+
 ## Hacking
 
 Evix is built with the latest stable Rust, targeting the 2024 edition. Those
