@@ -5,6 +5,10 @@
   ...
 }: let
   system = pkgs.stdenv.hostPlatform.system;
+  foreignSystem =
+    if system == "aarch64-linux"
+    then "x86_64-linux"
+    else "aarch64-linux";
   localFlake = ''
     {
       outputs = { self }: {
@@ -30,6 +34,67 @@
           system = "${system}";
           builder = "${pkgs.runtimeShell}";
           args = [ "-c" "echo ok > $out" ];
+        };
+      };
+    }
+  '';
+  distributedExpr = ''
+    {
+      recurseForDerivations = true;
+      groupA = {
+        recurseForDerivations = true;
+        alpha = derivation {
+          name = "evix-distributed-alpha";
+          system = "${system}";
+          builder = "${pkgs.runtimeShell}";
+          args = [ "-c" "echo alpha > $out" ];
+        };
+        beta = derivation {
+          name = "evix-distributed-beta";
+          system = "${system}";
+          builder = "${pkgs.runtimeShell}";
+          args = [ "-c" "echo beta > $out" ];
+        };
+      };
+      groupB = {
+        recurseForDerivations = true;
+        gamma = derivation {
+          name = "evix-distributed-gamma";
+          system = "${system}";
+          builder = "${pkgs.runtimeShell}";
+          args = [ "-c" "echo gamma > $out" ];
+        };
+        nested = {
+          recurseForDerivations = true;
+          delta = derivation {
+            name = "evix-distributed-delta";
+            system = "${system}";
+            builder = "${pkgs.runtimeShell}";
+            args = [ "-c" "echo delta > $out" ];
+          };
+        };
+      };
+    }
+  '';
+  routedRemoteExpr = ''
+    {
+      recurseForDerivations = true;
+      native = {
+        recurseForDerivations = true;
+        smoke = derivation {
+          name = "evix-routed-native";
+          system = "${system}";
+          builder = "${pkgs.runtimeShell}";
+          args = [ "-c" "echo native > $out" ];
+        };
+      };
+      foreign = {
+        recurseForDerivations = true;
+        smoke = derivation {
+          name = "evix-routed-foreign";
+          system = "${foreignSystem}";
+          builder = "${pkgs.runtimeShell}";
+          args = [ "-c" "echo foreign > $out" ];
         };
       };
     }
@@ -72,8 +137,11 @@ in
       import shlex
 
       SYSTEM = ${builtins.toJSON system}
+      FOREIGN_SYSTEM = ${builtins.toJSON foreignSystem}
       LOCAL_FLAKE = ${builtins.toJSON localFlake}
       REMOTE_EXPR = ${builtins.toJSON remoteExpr}
+      DISTRIBUTED_EXPR = ${builtins.toJSON distributedExpr}
+      ROUTED_REMOTE_EXPR = ${builtins.toJSON routedRemoteExpr}
       CLIENT_EXPR = ${builtins.toJSON ''
         { label }: {
           recurseForDerivations = true;
@@ -97,6 +165,22 @@ in
               machine.succeed(f"mkdir -p {q(parent)}")
           machine.succeed(f"printf %s {q(contents)} > {q(path)}")
 
+      def assert_no_errors(path):
+          host.succeed(
+              "jq -s -e 'map(select(has(\"error\"))) | length == 0' "
+              + q(path)
+              + " >/dev/null"
+          )
+
+      def assert_derivation_count(path, count):
+          host.succeed(
+              "jq -s -e --argjson count "
+              + str(count)
+              + " '[.[] | select(.drvPath?)] | length == $count' "
+              + q(path)
+              + " >/dev/null"
+          )
+
       def assert_derivation(path, attr, name):
           host.succeed(
               "jq -e --arg attr "
@@ -104,6 +188,19 @@ in
               + " --arg name "
               + q(name)
               + " 'select(.attr == $attr and .name == $name and (.drvPath? | strings | endswith(\".drv\")))' "
+              + q(path)
+              + " >/dev/null"
+          )
+
+      def assert_derivation_system(path, attr, name, system):
+          host.succeed(
+              "jq -e --arg attr "
+              + q(attr)
+              + " --arg name "
+              + q(name)
+              + " --arg system "
+              + q(system)
+              + " 'select(.attr == $attr and .name == $name and .system == $system and (.drvPath? | strings | endswith(\".drv\")))' "
               + q(path)
               + " >/dev/null"
           )
@@ -161,6 +258,19 @@ in
           assert_derivation("/tmp/evix-fallback.ndjson", "client", "evix-fallback")
           assert_meta("/tmp/evix-fallback.ndjson", "client", "client fixture")
 
+      with subtest("distributed eval over local workers"):
+          host.succeed(
+              "evix eval --no-daemon --workers 4 --expr "
+              + q(DISTRIBUTED_EXPR)
+              + " > /tmp/evix-distributed-local.ndjson"
+          )
+          assert_no_errors("/tmp/evix-distributed-local.ndjson")
+          assert_derivation_count("/tmp/evix-distributed-local.ndjson", 4)
+          assert_derivation("/tmp/evix-distributed-local.ndjson", "groupA.alpha", "evix-distributed-alpha")
+          assert_derivation("/tmp/evix-distributed-local.ndjson", "groupA.beta", "evix-distributed-beta")
+          assert_derivation("/tmp/evix-distributed-local.ndjson", "groupB.gamma", "evix-distributed-gamma")
+          assert_derivation("/tmp/evix-distributed-local.ndjson", "groupB.nested.delta", "evix-distributed-delta")
+
       with subtest("daemon eval, query, and diff"):
           start_daemon()
           try:
@@ -208,6 +318,22 @@ in
               + " > /tmp/evix-remote.ndjson"
           )
           assert_derivation("/tmp/evix-remote.ndjson", "remote.smoke", "evix-remote-smoke")
+
+      with subtest("distributed eval over routed remote workers"):
+          host.succeed(
+              "evix eval --no-daemon --workers 0 "
+              + "--remote worker:7357 "
+              + q(SYSTEM)
+              + " 1 --remote worker:7357 "
+              + q(FOREIGN_SYSTEM)
+              + " 1 --expr "
+              + q(ROUTED_REMOTE_EXPR)
+              + " > /tmp/evix-distributed-remote.ndjson"
+          )
+          assert_no_errors("/tmp/evix-distributed-remote.ndjson")
+          assert_derivation_count("/tmp/evix-distributed-remote.ndjson", 2)
+          assert_derivation_system("/tmp/evix-distributed-remote.ndjson", "native.smoke", "evix-routed-native", SYSTEM)
+          assert_derivation_system("/tmp/evix-distributed-remote.ndjson", "foreign.smoke", "evix-routed-foreign", FOREIGN_SYSTEM)
 
       stop_worker()
     '';
