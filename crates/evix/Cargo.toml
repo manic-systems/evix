@@ -29,3 +29,8 @@ tracing.workspace         = true
 
 [build-dependencies]
 capnpc.workspace = true
+
+[[test]]
+name = "session"
+path = "tests/session.rs"
+harness = false

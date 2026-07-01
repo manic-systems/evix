@@ -301,8 +301,30 @@ pub struct Diff {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Filter {
-  pub systems:     Option<Vec<String>>,
-  pub attr_prefix: Option<Vec<String>>,
+  /// Match derivations whose `system` is one of these values.
+  pub systems:          Option<Vec<String>>,
+  /// Backwards-compatible single attribute-path prefix.
+  pub attr_prefix:      Option<Vec<String>>,
+  /// Match derivations whose attribute path starts with any listed prefix.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub attr_prefixes:    Option<Vec<Vec<String>>>,
+  /// Match derivations whose attribute path exactly equals any listed path.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub attrs:            Option<Vec<Vec<String>>>,
+  /// Match derivations whose `name` is one of these values.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub names:            Option<Vec<String>>,
+  /// Match derivations whose `.drv` path is one of these values.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub drv_paths:        Option<Vec<String>>,
+  /// Match derivations whose rendered attr path matches any wildcard pattern.
+  /// `*` matches any string and `?` matches one character.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub include_patterns: Option<Vec<String>>,
+  /// Exclude derivations whose rendered attr path matches any wildcard
+  /// pattern. `*` matches any string and `?` matches one character.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub exclude_patterns: Option<Vec<String>>,
 }
 
 /// Event produced while traversing a Nix expression.

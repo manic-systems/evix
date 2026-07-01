@@ -539,7 +539,7 @@ fn pairs(values: Vec<Pair>) -> Vec<(String, String)> {
 
 fn filter(systems: Vec<String>, prefixes: Vec<String>) -> Filter {
   Filter {
-    systems:     (!systems.is_empty()).then_some(systems),
+    systems: (!systems.is_empty()).then_some(systems),
     attr_prefix: (!prefixes.is_empty()).then(|| {
       prefixes
         .into_iter()
@@ -552,6 +552,7 @@ fn filter(systems: Vec<String>, prefixes: Vec<String>) -> Filter {
         })
         .collect()
     }),
+    ..Filter::default()
   }
 }
 
