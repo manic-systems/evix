@@ -207,8 +207,8 @@ Like `query`, `diff` requires an existing warm daemon session.
 
 <!-- markdownlint-enable MD013 -->
 
-Logs are written to stderr. JSON events are written to stdout. `RUST_LOG`
-overrides `--verbose` and `--quiet` when set.
+Logs are written to stderr at `warn` by default. JSON events are written to
+stdout. `RUST_LOG` overrides `--verbose` and `--quiet` when set.
 
 ## Distributed Evaluation
 
@@ -379,6 +379,8 @@ async fn example() -> anyhow::Result<()> {
 }
 ```
 
+### Notes
+
 `Session::stream` is single-use. Drain it once to populate the warm graph before
 calling `query_snapshot` or `diff_once`; `Session::watch` can start and drain
 the initial evaluation itself before emitting diffs.
@@ -387,6 +389,11 @@ Use `Session::stream_bounded(capacity)` or `Session::watch_bounded(capacity)`
 when the embedding application needs backpressure. These variants keep at most
 `capacity` pending results, with `0` treated as `1`, and pause delivery while
 the receiver catches up.
+
+By default, local workers re-exec the embedding process and enter the worker
+protocol through `run_worker_if_requested`. Embedders that cannot or do not want
+to re-exec the host binary can set `ConfigBuilder::worker_exe(path)` and point
+local workers at a dedicated Evix-compatible worker executable instead.
 
 `Filter` can narrow warm queries by systems, a legacy single `attr_prefix`,
 multiple `attr_prefixes`, exact `attrs`, derivation `names`, and exact
@@ -398,6 +405,23 @@ Serializing `evix::Event` directly with serde preserves the Rust enum shape,
 such as `{ "derivation": { ... } }` or `{ "attr_set": { ... } }`. Use
 `evix::json::event_value` or `evix::json::event_line` when you want the
 flattened CLI-compatible NDJSON shape shown above.
+
+#### Web And WASM Embedding
+
+While this has been considered (or more accurately, _desired_), a true
+in-browser WASM (or similar) evaluator with Evix would require a different
+evaluator backend that we control entirely, i.e., an evaulator backend that does
+not depend on libnix, the Nix store, or Unix worker subprocesses. For web
+contexts, run you're encouraged to run Evix natively as an application sidecar,
+daemon, or remote worker and expose an application-specific HTTP/WebSocket API
+above `Session`, `query_snapshot`, or `diff_once`. The current backend is native
+by design: it links Nix through `nix-bindings`, opens a Nix store, uses Unix
+process isolation for local workers, and exposes daemon/worker transports over
+Unix sockets and TCP. That backend is suitable for native applications,
+services, and web backends, but not for browser WASM or
+`wasm32-unknown-unknown`.
+
+Unfortunate, but this is what we have :')
 
 ## Hacking
 
@@ -423,6 +447,10 @@ $ cargo build --release
 # Alternatively, build a specific package:
 $ cargo build --release -p evix-cli
 ```
+
+Release builds enable LTO, single-codegen-unit optimization, symbol stripping,
+and aborting panics to reduce distributed binary size while keeping
+speed-focused `opt-level=3` code generation.
 
 The Nix package provides both the CLI and the daemon:
 
