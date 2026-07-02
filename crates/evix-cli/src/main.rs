@@ -233,12 +233,12 @@ fn with_runtime<T>(future: impl Future<Output = Result<T>>) -> Result<T> {
 
 fn init_tracing_subscriber(verbosity: Verbosity) {
   let level = match i16::from(verbosity.verbose) - i16::from(verbosity.quiet) {
-    i16::MIN..=-3 => "off",
-    -2 => "error",
-    -1 => "warn",
-    0 => "info",
-    1 => "debug",
-    2..=i16::MAX => "trace",
+    i16::MIN..=-2 => "off",
+    -1 => "error",
+    0 => "warn",
+    1 => "info",
+    2 => "debug",
+    3..=i16::MAX => "trace",
   };
 
   tracing_subscriber::fmt()

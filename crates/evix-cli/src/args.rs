@@ -512,6 +512,7 @@ fn config(args: EvalInput) -> Result<Config> {
         }
       })
       .collect(),
+    worker_exe: None,
   })
 }
 

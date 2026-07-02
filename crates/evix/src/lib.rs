@@ -86,6 +86,13 @@ pub struct Config {
   /// Remote worker endpoints available to the master.
   #[serde(default)]
   pub remotes:         Vec<Remote>,
+  /// Worker executable used for local worker subprocesses.
+  ///
+  /// This is intentionally library-only and is not serialized into daemon
+  /// requests. When unset, local workers re-exec the current process and
+  /// expect the host to call [`run_worker_if_requested`] during startup.
+  #[serde(skip)]
+  pub worker_exe:      Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -102,6 +109,7 @@ impl Default for Config {
       override_inputs: Vec::new(),
       nix_options:     Vec::new(),
       remotes:         Vec::new(),
+      worker_exe:      None,
     }
   }
 }
@@ -236,6 +244,13 @@ impl ConfigBuilder {
 
   pub fn remote(mut self, remote: Remote) -> Self {
     self.config.remotes.push(remote);
+    self
+  }
+
+  /// Use a dedicated executable for local worker subprocesses instead of
+  /// re-executing the embedding process.
+  pub fn worker_exe(mut self, path: impl Into<PathBuf>) -> Self {
+    self.config.worker_exe = Some(path.into());
     self
   }
 
@@ -445,6 +460,7 @@ mod tests {
         systems:  vec!["x86_64-linux".into()],
         workers:  2,
       })
+      .worker_exe("evix-worker")
       .build();
 
     assert_eq!(config.workers, 4);
@@ -457,5 +473,6 @@ mod tests {
     assert_eq!(config.override_inputs.len(), 1);
     assert_eq!(config.nix_options.len(), 1);
     assert_eq!(config.remotes.len(), 1);
+    assert_eq!(config.worker_exe, Some(PathBuf::from("evix-worker")));
   }
 }

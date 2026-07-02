@@ -1,4 +1,4 @@
-use std::{env, process::Stdio};
+use std::{env, path::Path, process::Stdio};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use tokio::{
@@ -43,9 +43,13 @@ impl WorkerProcess {
   pub(crate) async fn spawn_local(
     config: &WorkerConfig,
     label: impl Into<String>,
+    worker_exe: Option<&Path>,
   ) -> Result<Self> {
     let label = label.into();
-    let exe = env::current_exe().context("resolving current exe")?;
+    let exe = match worker_exe {
+      Some(path) => path.to_path_buf(),
+      None => env::current_exe().context("resolving current exe")?,
+    };
     debug!(worker = %label, "spawning local worker process");
     let mut command = Command::new(&exe);
     command

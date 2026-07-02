@@ -290,7 +290,7 @@ fn local_worker(id: usize) -> WorkerSpec {
   WorkerSpec {
     id,
     label: format!("local#{id}"),
-    kind: WorkerKind::Local,
+    kind: WorkerKind::Local { worker_exe: None },
   }
 }
 

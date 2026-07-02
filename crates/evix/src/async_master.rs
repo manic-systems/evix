@@ -1,6 +1,7 @@
 use std::{
   collections::VecDeque,
   future::Future,
+  path::PathBuf,
   sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -43,7 +44,7 @@ struct WorkerSpec {
 
 #[derive(Clone)]
 enum WorkerKind {
-  Local,
+  Local { worker_exe: Option<PathBuf> },
   Remote(Remote),
 }
 
@@ -170,7 +171,9 @@ fn worker_specs(config: &Config) -> Vec<WorkerSpec> {
     specs.push(WorkerSpec {
       id:    specs.len(),
       label: "local".into(),
-      kind:  WorkerKind::Local,
+      kind:  WorkerKind::Local {
+        worker_exe: config.worker_exe.clone(),
+      },
     });
   }
   for remote in config.remotes.clone() {
@@ -495,9 +498,14 @@ fn display_attr(path: &[String]) -> String {
 impl WorkerClient {
   async fn connect(config: &WorkerConfig, spec: &WorkerSpec) -> Result<Self> {
     match &spec.kind {
-      WorkerKind::Local => {
+      WorkerKind::Local { worker_exe } => {
         Ok(Self::Local(Box::new(
-          WorkerProcess::spawn_local(config, &spec.label).await?,
+          WorkerProcess::spawn_local(
+            config,
+            &spec.label,
+            worker_exe.as_deref(),
+          )
+          .await?,
         )))
       },
       WorkerKind::Remote(remote) => {
@@ -520,7 +528,12 @@ impl WorkerClient {
         if status == WorkerStatus::Restart {
           info!(worker = %spec.label, "restarting worker due to memory limit");
           worker.wait_for_restart().await;
-          **worker = WorkerProcess::spawn_local(config, &spec.label).await?;
+          let worker_exe = match &spec.kind {
+            WorkerKind::Local { worker_exe } => worker_exe.as_deref(),
+            WorkerKind::Remote(_) => None,
+          };
+          **worker =
+            WorkerProcess::spawn_local(config, &spec.label, worker_exe).await?;
         }
         Ok(event)
       },
