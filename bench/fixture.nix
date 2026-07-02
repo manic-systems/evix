@@ -3,7 +3,7 @@
 # identically without any --force-recurse flag. The derivations are never
 # built; only their `.drv` is computed, so evaluation is the only cost.
 #
-# This sucks.
+# This sucks. It *really* sucks.
 {
   system ? builtins.currentSystem,
   breadth ? 4,
