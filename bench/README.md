@@ -31,8 +31,10 @@ $bench/equiv.sh 6 3        # one shape
 Asserts two invariants and exits non-zero on any divergence:
 
 1. **Topology invariance**: evix emits the identical set of `drvPath`s whether
-   run with 1 local worker, 8 local workers, or 4 remote workers. Splitting the
-   work must not change the result.
+   run with 1 local worker, 8 local workers, 4 remote-only workers, a mixed 4
+   local + 4 remote distributed topology, or a prewarmed daemon graph queried
+   through `evix query`. Splitting or caching the work must not change the
+   result.
 2. **Reference equivalence**: that set matches `nix-eval-jobs` on the same
    input. Skipped with a warning if `nix-eval-jobs` is not on `PATH`.
 
@@ -48,5 +50,7 @@ bench/bench.sh           # breadth=6 depth=3  (1296 derivations)
 bench/bench.sh 5 3
 ```
 
-Runs `hyperfine` over evix at 1/4/8 local workers, evix over a remote worker,
-and nix-eval-jobs. Writes `bench/results.md`.
+Runs `hyperfine` over evix at 1/4/8 local-only workers, evix remote-only
+distributed evaluation, evix mixed local+remote distributed evaluation,
+daemon-backed cold prewarming, warm full-graph daemon queries, filtered warm
+daemon queries, and nix-eval-jobs. Writes `bench/results.md`.

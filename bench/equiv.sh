@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Test two invariants:
 #   1. Topology invariance, evix emits the same derivation set regardless of
-#      how work is split (1 worker, N workers, remote workers).
+#      how work is split (1 worker, N workers, remote-only workers, mixed
+#      local+remote workers, and daemon warm graph queries).
 #   2. Reference equivalence, that set matches nix-eval-jobs on the same input.
 #
 # A mismatch prints the offending diff and exits non-zero. nix-eval-jobs is
@@ -16,7 +17,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 fixture="$here/fixture.nix"
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+trap '[ -n "${wpid:-}" ] && kill "$wpid" 2>/dev/null || true; [ -n "${dpid:-}" ] && kill "$dpid" 2>/dev/null || true; rm -rf "$work"' EXIT
 
 sys="$(nix eval --raw --impure --expr builtins.currentSystem)"
 
@@ -26,6 +27,9 @@ evix="$root/target/release/evix"
 
 # bench harness. Swap to an OS-assigned port if this ever races in CI.
 port=$((20000 + RANDOM % 20000))
+wpid=""
+dpid=""
+sock="$work/evix.sock"
 
 # Normalize any NDJSON stream (evix or nix-eval-jobs) to a sorted, unique list
 # of drvPaths. evix's attrset/error events carry no drvPath and drop out.
@@ -38,20 +42,62 @@ run_local() {
 		>"$2"
 }
 
-run_remote() {
-	# out, breadth, depth
+start_worker() {
 	"$evix" worker --listen "127.0.0.1:$port" >/dev/null 2>&1 &
-	local wpid=$!
+	wpid=$!
 	for _ in $(seq 1 100); do
 		(echo >"/dev/tcp/127.0.0.1/$port") 2>/dev/null && break
 		sleep 0.05
 	done
+}
+
+stop_worker() {
+	[ -n "$wpid" ] || return 0
+	kill "$wpid" 2>/dev/null || true
+	wait "$wpid" 2>/dev/null || true
+	wpid=""
+}
+
+run_remote() {
+	# out, breadth, depth
 	"$evix" eval --no-daemon --workers 0 \
 		--remote "127.0.0.1:$port" "$sys" 4 \
 		--file "$fixture" --argstr system "$sys" --arg breadth "$2" --arg depth "$3" \
 		>"$1"
-	kill "$wpid" 2>/dev/null || true
-	wait "$wpid" 2>/dev/null || true
+}
+
+run_mixed() {
+	# out, breadth, depth
+	"$evix" eval --no-daemon --workers 4 \
+		--remote "127.0.0.1:$port" "$sys" 4 \
+		--file "$fixture" --argstr system "$sys" --arg breadth "$2" --arg depth "$3" \
+		>"$1"
+}
+
+start_daemon() {
+	"$evix" daemon --foreground --socket "$sock" >/dev/null 2>&1 &
+	dpid=$!
+	for _ in $(seq 1 100); do
+		[ -S "$sock" ] && break
+		sleep 0.05
+	done
+}
+
+stop_daemon() {
+	[ -n "$dpid" ] || return 0
+	kill "$dpid" 2>/dev/null || true
+	wait "$dpid" 2>/dev/null || true
+	dpid=""
+}
+
+run_daemon_query() {
+	# out, breadth, depth
+	"$evix" eval --socket "$sock" --workers 4 \
+		--file "$fixture" --argstr system "$sys" --arg breadth "$2" --arg depth "$3" \
+		>/dev/null
+	"$evix" query --socket "$sock" --workers 4 \
+		--file "$fixture" --argstr system "$sys" --arg breadth "$2" --arg depth "$3" \
+		>"$1"
 }
 
 run_nej() {
@@ -85,9 +131,15 @@ for spec in "${specs[@]}"; do
 		continue
 	}
 	run_local 8 "$work/w8" "$b" "$d"
+	start_worker
 	run_remote "$work/wr" "$b" "$d"
+	run_mixed "$work/wm" "$b" "$d"
+	stop_worker
+	start_daemon
+	run_daemon_query "$work/wq" "$b" "$d"
+	stop_daemon
 
-	for variant in w8 wr; do
+	for variant in w8 wr wm wq; do
 		if ! diff "$work/base" <(norm "$work/$variant") >"$work/d.$variant"; then
 			echo "FAIL: topology '$variant' diverged from single-worker baseline:"
 			cat "$work/d.$variant"
