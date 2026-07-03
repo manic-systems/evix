@@ -241,8 +241,7 @@ impl Session {
             },
             Err(err) => {
               let message = err.to_string();
-              record_initial_error(&state, &completed, &initial, message)
-                .await;
+              record_initial_error(&state, &completed, &initial, message).await;
               let _ = tx.unbounded_send(Err(Error::from(err)));
               return;
             },
@@ -309,8 +308,7 @@ impl Session {
             },
             Err(err) => {
               let message = err.to_string();
-              record_initial_error(&state, &completed, &initial, message)
-                .await;
+              record_initial_error(&state, &completed, &initial, message).await;
               let _ = tx.send(Err(Error::from(err))).await;
               return;
             },
