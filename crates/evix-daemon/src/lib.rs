@@ -1,10 +1,12 @@
+#[cfg(target_os = "linux")]
+use std::os::unix::io::AsRawFd as _;
 use std::{
   collections::HashMap,
   env,
   fs,
   io::{BufRead, BufReader, Write},
   os::unix::{
-    fs::FileTypeExt as _,
+    fs::{FileTypeExt as _, PermissionsExt as _},
     net::{UnixListener, UnixStream},
   },
   path::{Path, PathBuf},
@@ -19,6 +21,8 @@ use evix_protocol::{Request, Response};
 use futures_util::StreamExt as _;
 use tokio::runtime::Builder;
 use tracing::{error, info};
+
+const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Default)]
 struct DaemonState {
@@ -105,6 +109,8 @@ fn bind_listener(
       return Err(err);
     },
   };
+  fs::set_permissions(socket, fs::Permissions::from_mode(0o600))
+    .with_context(|| format!("setting permissions on {}", socket.display()))?;
 
   reporter.ready(socket)?;
   info!(socket = %socket.display(), "evix daemon listening");
@@ -273,8 +279,14 @@ fn handle_connection(
   state: Arc<DaemonState>,
   mut stream: UnixStream,
 ) -> Result<()> {
-  let mut line = String::new();
-  BufReader::new(stream.try_clone()?).read_line(&mut line)?;
+  authorize_peer(&stream)?;
+  let line = match read_request_line(&stream) {
+    Ok(line) => line,
+    Err(err) => {
+      let _ = write_response(&mut stream, &Response::error(err.to_string()));
+      return Err(err);
+    },
+  };
   if line.trim().is_empty() {
     return Ok(());
   }
@@ -317,6 +329,88 @@ fn handle_connection(
   }
 
   Ok(())
+}
+
+fn authorize_peer(stream: &UnixStream) -> Result<()> {
+  #[cfg(target_os = "linux")]
+  {
+    let mut cred = libc::ucred {
+      pid: 0,
+      uid: 0,
+      gid: 0,
+    };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let rc = unsafe {
+      libc::getsockopt(
+        stream.as_raw_fd(),
+        libc::SOL_SOCKET,
+        libc::SO_PEERCRED,
+        &mut cred as *mut _ as *mut libc::c_void,
+        &mut len,
+      )
+    };
+    if rc != 0 {
+      return Err(std::io::Error::last_os_error())
+        .context("reading daemon peer credentials");
+    }
+    let uid = unsafe { libc::geteuid() };
+    if cred.uid != uid {
+      bail!(
+        "refusing daemon connection from uid {}; expected {}",
+        cred.uid,
+        uid
+      );
+    }
+  }
+
+  #[cfg(not(target_os = "linux"))]
+  {
+    let _ = stream;
+  }
+
+  Ok(())
+}
+
+fn read_request_line(stream: &UnixStream) -> Result<String> {
+  let mut reader = BufReader::new(stream.try_clone()?);
+  let mut bytes = read_limited_line(&mut reader, MAX_REQUEST_BYTES)
+    .context("reading daemon request")?;
+  if bytes.last() == Some(&b'\n') {
+    bytes.pop();
+    if bytes.last() == Some(&b'\r') {
+      bytes.pop();
+    }
+  }
+  String::from_utf8(bytes).context("daemon request is not UTF-8")
+}
+
+fn read_limited_line<R: BufRead>(
+  reader: &mut R,
+  limit: usize,
+) -> std::io::Result<Vec<u8>> {
+  let mut out = Vec::new();
+
+  loop {
+    let available = reader.fill_buf()?;
+    if available.is_empty() {
+      return Ok(out);
+    }
+
+    let newline = available.iter().position(|byte| *byte == b'\n');
+    let len = newline.map_or(available.len(), |index| index + 1);
+    if out.len() + len > limit {
+      return Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("daemon request exceeds {limit} bytes"),
+      ));
+    }
+
+    out.extend_from_slice(&available[..len]);
+    reader.consume(len);
+    if newline.is_some() {
+      return Ok(out);
+    }
+  }
 }
 
 async fn handle_eval(
@@ -386,7 +480,10 @@ fn write_response(stream: &mut UnixStream, response: &Response) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-  use std::time::{SystemTime, UNIX_EPOCH};
+  use std::{
+    io::Cursor,
+    time::{SystemTime, UNIX_EPOCH},
+  };
 
   use super::*;
 
@@ -462,6 +559,19 @@ mod tests {
   }
 
   #[test]
+  fn socket_startup_sets_private_permissions() {
+    let path = unique_socket_path("private-socket");
+    let mut reporter = RecordingStartupReporter::default();
+
+    let listener = bind_listener(&path, &mut reporter).unwrap();
+
+    let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    drop(listener);
+    cleanup_socket_path(&path);
+  }
+
+  #[test]
   fn readiness_reports_bind_failure() {
     let path = unique_socket_path("bind-failure");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -487,6 +597,24 @@ mod tests {
     assert!(path.exists());
     drop(listener);
     cleanup_socket_path(&path);
+  }
+
+  #[test]
+  fn request_reader_rejects_oversized_line() {
+    let mut reader = Cursor::new(b"abcdef\n");
+
+    let error = read_limited_line(&mut reader, 4).unwrap_err().to_string();
+
+    assert!(error.contains("daemon request exceeds 4 bytes"));
+  }
+
+  #[test]
+  fn request_reader_accepts_line_at_limit() {
+    let mut reader = Cursor::new(b"abc\n");
+
+    let line = read_limited_line(&mut reader, 4).unwrap();
+
+    assert_eq!(line, b"abc\n");
   }
 
   fn unique_socket_path(name: &str) -> PathBuf {
