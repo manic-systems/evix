@@ -63,7 +63,11 @@ impl WorkerProcess {
       .with_context(|| format!("spawning worker process for {label}"))?;
 
     let mut stdin = child.stdin.take().context("worker stdin")?.compat_write();
-    write_client(&mut stdin, &ClientMessage::Setup(config.clone())).await?;
+    write_client(&mut stdin, &ClientMessage::Setup {
+      config: config.clone(),
+      token:  None,
+    })
+    .await?;
 
     let stdout =
       BufReader::new(child.stdout.take().context("worker stdout")?).compat();

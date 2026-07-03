@@ -40,6 +40,8 @@ enum Commands {
     #[pound(long)]
     remote:          Vec<RemoteArg>,
     #[pound(long)]
+    remote_token:    Option<String>,
+    #[pound(long)]
     meta:            bool,
     #[pound(long)]
     show_input_drvs: bool,
@@ -76,6 +78,8 @@ enum Commands {
     #[pound(long)]
     remote:          Vec<RemoteArg>,
     #[pound(long)]
+    remote_token:    Option<String>,
+    #[pound(long)]
     meta:            bool,
     #[pound(long)]
     show_input_drvs: bool,
@@ -111,6 +115,8 @@ enum Commands {
     option:          Vec<Pair>,
     #[pound(long)]
     remote:          Vec<RemoteArg>,
+    #[pound(long)]
+    remote_token:    Option<String>,
     #[pound(long)]
     meta:            bool,
     #[pound(long)]
@@ -152,6 +158,8 @@ enum Commands {
     #[pound(long)]
     remote:          Vec<RemoteArg>,
     #[pound(long)]
+    remote_token:    Option<String>,
+    #[pound(long)]
     meta:            bool,
     #[pound(long)]
     show_input_drvs: bool,
@@ -177,6 +185,8 @@ enum Commands {
   Worker {
     #[pound(long)]
     listen: String,
+    #[pound(long)]
+    token:  Option<String>,
   },
 }
 
@@ -261,6 +271,7 @@ pub enum CommandPlan {
   },
   Worker {
     listen: String,
+    token:  String,
   },
 }
 
@@ -306,6 +317,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
       override_input,
       option,
       remote,
+      remote_token,
       meta,
       show_input_drvs,
       workers,
@@ -325,6 +337,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
           override_input,
           option,
           remote,
+          remote_token,
           meta,
           show_input_drvs,
           workers,
@@ -345,6 +358,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
       override_input,
       option,
       remote,
+      remote_token,
       meta,
       show_input_drvs,
       workers,
@@ -363,6 +377,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
         override_input,
         option,
         remote,
+        remote_token,
         meta,
         show_input_drvs,
         workers,
@@ -388,6 +403,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
       override_input,
       option,
       remote,
+      remote_token,
       meta,
       show_input_drvs,
       workers,
@@ -410,6 +426,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
           override_input,
           option,
           remote,
+          remote_token,
           meta,
           show_input_drvs,
           workers,
@@ -430,6 +447,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
       override_input,
       option,
       remote,
+      remote_token,
       meta,
       show_input_drvs,
       workers,
@@ -448,6 +466,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
           override_input,
           option,
           remote,
+          remote_token,
           meta,
           show_input_drvs,
           workers,
@@ -461,7 +480,12 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
     Commands::Daemon { socket, foreground } => {
       Ok(CommandPlan::Daemon { socket, foreground })
     },
-    Commands::Worker { listen } => Ok(CommandPlan::Worker { listen }),
+    Commands::Worker { listen, token } => {
+      Ok(CommandPlan::Worker {
+        listen,
+        token: required_remote_token(token)?,
+      })
+    },
   }
 }
 
@@ -474,6 +498,7 @@ struct EvalInput {
   override_input:  Vec<Pair>,
   option:          Vec<Pair>,
   remote:          Vec<RemoteArg>,
+  remote_token:    Option<String>,
   meta:            bool,
   show_input_drvs: bool,
   workers:         usize,
@@ -489,6 +514,11 @@ fn config(args: EvalInput) -> Result<Config> {
     (None, None, Some(file)) => Input::File(file),
     _ => bail!("exactly one of --flake, --expr, or --file is required"),
   };
+
+  let remote_token = remote_token(args.remote_token)?;
+  if !args.remote.is_empty() && remote_token.is_none() {
+    bail!("remote evaluation requires --remote-token or EVIX_REMOTE_TOKEN");
+  }
 
   Ok(Config {
     input,
@@ -509,11 +539,27 @@ fn config(args: EvalInput) -> Result<Config> {
           endpoint: remote.endpoint,
           systems:  remote.systems,
           workers:  remote.workers,
+          token:    remote_token.clone(),
         }
       })
       .collect(),
     worker_exe: None,
   })
+}
+
+fn remote_token(flag: Option<String>) -> Result<Option<String>> {
+  let token = flag.or_else(|| env::var("EVIX_REMOTE_TOKEN").ok());
+  match token {
+    Some(token) if token.is_empty() => bail!("remote token must not be empty"),
+    token => Ok(token),
+  }
+}
+
+fn required_remote_token(flag: Option<String>) -> Result<String> {
+  match remote_token(flag)? {
+    Some(token) => Ok(token),
+    None => bail!("remote worker requires --token or EVIX_REMOTE_TOKEN"),
+  }
 }
 
 fn auto_args(
@@ -622,7 +668,38 @@ fn pack(values: &[String]) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+  use std::{ffi::OsString, sync::Mutex};
+
   use super::*;
+
+  static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+  struct EnvGuard {
+    previous: Option<OsString>,
+  }
+
+  impl EnvGuard {
+    fn clear_remote_token() -> Self {
+      let guard = Self {
+        previous: env::var_os("EVIX_REMOTE_TOKEN"),
+      };
+      unsafe {
+        env::remove_var("EVIX_REMOTE_TOKEN");
+      }
+      guard
+    }
+  }
+
+  impl Drop for EnvGuard {
+    fn drop(&mut self) {
+      unsafe {
+        match &self.previous {
+          Some(value) => env::set_var("EVIX_REMOTE_TOKEN", value),
+          None => env::remove_var("EVIX_REMOTE_TOKEN"),
+        }
+      }
+    }
+  }
 
   #[test]
   fn eval_accepts_nix_style_argstr_pairs() {
@@ -657,6 +734,8 @@ mod tests {
       "worker:7357",
       "x86_64-linux,aarch64-linux",
       "2",
+      "--remote-token",
+      "secret",
     ])
     .expect("parse eval plan") else {
       panic!("expected eval command");
@@ -669,6 +748,27 @@ mod tests {
       "aarch64-linux".to_owned()
     ]);
     assert_eq!(config.remotes[0].workers, 2);
+    assert_eq!(config.remotes[0].token.as_deref(), Some("secret"));
+  }
+
+  #[test]
+  fn eval_rejects_remote_without_token() {
+    let _lock = ENV_LOCK.lock().expect("env lock poisoned");
+    let _env = EnvGuard::clear_remote_token();
+    let error = match parse_plan_from([
+      "eval",
+      "--expr",
+      "{}",
+      "--remote",
+      "worker:7357",
+      "x86_64-linux",
+      "1",
+    ]) {
+      Ok(_) => panic!("remote without token should fail"),
+      Err(error) => error.to_string(),
+    };
+
+    assert!(error.contains("remote evaluation requires --remote-token"));
   }
 
   #[test]
@@ -744,15 +844,33 @@ mod tests {
 
   #[test]
   fn worker_accepts_long_verbose_flags() {
-    let (verbosity, CommandPlan::Worker { listen }) =
-      parse_plan_from(["worker", "--verbose", "--listen", "0.0.0.0:7357"])
-        .expect("parse worker plan")
-    else {
+    let (verbosity, CommandPlan::Worker { listen, token }) = parse_plan_from([
+      "worker",
+      "--verbose",
+      "--listen",
+      "0.0.0.0:7357",
+      "--token",
+      "secret",
+    ])
+    .expect("parse worker plan") else {
       panic!("expected worker command");
     };
 
     assert_eq!(verbosity.verbose, 1);
     assert_eq!(verbosity.quiet, 0);
     assert_eq!(listen, "0.0.0.0:7357");
+    assert_eq!(token, "secret");
+  }
+
+  #[test]
+  fn worker_rejects_missing_token() {
+    let _lock = ENV_LOCK.lock().expect("env lock poisoned");
+    let _env = EnvGuard::clear_remote_token();
+    let error = match parse_plan_from(["worker", "--listen", "0.0.0.0:7357"]) {
+      Ok(_) => panic!("worker without token should fail"),
+      Err(error) => error.to_string(),
+    };
+
+    assert!(error.contains("remote worker requires --token"));
   }
 }

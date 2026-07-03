@@ -10,6 +10,7 @@ struct ClientMessage {
 
 struct Setup {
   config @0 :WorkerConfig;
+  token @1 :TextOpt;
 }
 
 struct Work {

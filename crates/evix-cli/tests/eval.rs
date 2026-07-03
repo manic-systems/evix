@@ -38,7 +38,8 @@ fn eval_expr_traverses_attrsets() {
 #[test]
 fn remote_worker_consumes_shared_eval_queue() {
   let endpoint = unused_loopback_endpoint();
-  let mut worker = spawn_worker(&endpoint);
+  let token = "test-remote-token";
+  let mut worker = spawn_worker(&endpoint, token);
   wait_for_worker(&endpoint);
 
   let output = evix()
@@ -51,6 +52,8 @@ fn remote_worker_consumes_shared_eval_queue() {
       &endpoint,
       "x86_64-linux",
       "1",
+      "--remote-token",
+      token,
       "--expr",
       "let system = builtins.currentSystem; in { recurseForDerivations = \
        true; remote = derivation { name = \"evix-remote\"; inherit system; \
@@ -79,9 +82,9 @@ fn unused_loopback_endpoint() -> String {
   addr.to_string()
 }
 
-fn spawn_worker(endpoint: &str) -> Child {
+fn spawn_worker(endpoint: &str, token: &str) -> Child {
   evix()
-    .args(["worker", "--listen", endpoint])
+    .args(["worker", "--listen", endpoint, "--token", token])
     .stdin(Stdio::null())
     .stdout(Stdio::null())
     .stderr(Stdio::piped())

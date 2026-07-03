@@ -37,7 +37,7 @@ pub async fn run() -> Result<()> {
   let mut writer = BufWriter::new(stdout).compat_write();
 
   let config = match read_client(&mut reader).await? {
-    ClientMessage::Setup(config) => config,
+    ClientMessage::Setup { config, .. } => config,
     other => bail!("worker expected setup message, got {other:?}"),
   };
   debug!("worker initialized");
@@ -61,7 +61,7 @@ pub async fn run() -> Result<()> {
         debug!("received shutdown command, worker exiting");
         break;
       },
-      ClientMessage::Setup(_) => bail!("worker setup sent twice"),
+      ClientMessage::Setup { .. } => bail!("worker setup sent twice"),
     };
     let attr = path.join(".");
     trace!(attr = %attr, "evaluating attribute");

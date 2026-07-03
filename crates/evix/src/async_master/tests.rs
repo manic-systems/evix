@@ -12,6 +12,7 @@ fn scheduler_requeues_derivation_rejected_by_remote_system() {
       endpoint: "x86:7357".into(),
       systems:  vec!["x86_64-linux".into()],
       workers:  1,
+      token:    None,
     }),
   };
   let second = WorkerSpec {
@@ -21,6 +22,7 @@ fn scheduler_requeues_derivation_rejected_by_remote_system() {
       endpoint: "aarch64:7357".into(),
       systems:  vec!["aarch64-linux".into()],
       workers:  1,
+      token:    None,
     }),
   };
   let mut scheduler = scheduler_with_workers(2);
@@ -54,6 +56,7 @@ fn scheduler_keeps_rejected_worker_alive_for_later_compatible_work() {
       endpoint: "x86:7357".into(),
       systems:  vec!["x86_64-linux".into()],
       workers:  1,
+      token:    None,
     }),
   };
   let second = WorkerSpec {
@@ -63,6 +66,7 @@ fn scheduler_keeps_rejected_worker_alive_for_later_compatible_work() {
       endpoint: "aarch64:7357".into(),
       systems:  vec!["aarch64-linux".into()],
       workers:  1,
+      token:    None,
     }),
   };
   let mut scheduler = scheduler_with_workers(2);
@@ -102,6 +106,7 @@ fn scheduler_fails_when_no_worker_accepts_derivation_system() {
       endpoint: "x86:7357".into(),
       systems:  vec!["x86_64-linux".into()],
       workers:  1,
+      token:    None,
     }),
   };
   let mut scheduler = scheduler_with_workers(1);
@@ -128,12 +133,29 @@ fn config_rejects_zero_remote_workers() {
       endpoint: "worker:7357".into(),
       systems:  vec!["x86_64-linux".into()],
       workers:  0,
+      token:    None,
     }],
     ..Config::default()
   };
 
   let error = validate_config(&config).unwrap_err().to_string();
   assert!(error.contains("must be greater than zero"));
+}
+
+#[test]
+fn config_rejects_remote_without_token() {
+  let config = Config {
+    remotes: vec![Remote {
+      endpoint: "worker:7357".into(),
+      systems:  vec!["x86_64-linux".into()],
+      workers:  1,
+      token:    None,
+    }],
+    ..Config::default()
+  };
+
+  let error = validate_config(&config).unwrap_err().to_string();
+  assert!(error.contains("requires a token"));
 }
 
 fn scheduler_with_workers(worker_count: usize) -> Scheduler {
@@ -302,6 +324,7 @@ fn remote_worker(id: usize, systems: &[&str]) -> WorkerSpec {
       endpoint: format!("h{id}:7357"),
       systems:  systems.iter().map(|s| (*s).to_string()).collect(),
       workers:  1,
+      token:    None,
     }),
   }
 }

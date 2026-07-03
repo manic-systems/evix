@@ -160,6 +160,9 @@ fn validate_config(config: &Config) -> Result<()> {
         remote.endpoint
       );
     }
+    if remote.token.as_deref().is_none_or(str::is_empty) {
+      bail!("remote worker {} requires a token", remote.endpoint);
+    }
   }
   Ok(())
 }
@@ -516,7 +519,13 @@ impl WorkerClient {
       },
       WorkerKind::Remote(remote) => {
         Ok(Self::Remote(
-          RemoteWorker::connect(&remote.endpoint, config, &spec.label).await?,
+          RemoteWorker::connect(
+            &remote.endpoint,
+            remote.token.as_deref(),
+            config,
+            &spec.label,
+          )
+          .await?,
         ))
       },
     }

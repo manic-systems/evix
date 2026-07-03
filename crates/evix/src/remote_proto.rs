@@ -17,7 +17,10 @@ use crate::{
 
 #[derive(Debug)]
 pub(crate) enum ClientMessage {
-  Setup(WorkerConfig),
+  Setup {
+    config: WorkerConfig,
+    token:  Option<String>,
+  },
   Work(Vec<String>),
   Shutdown,
 }
@@ -41,8 +44,10 @@ where
   {
     let mut root = builder.init_root::<worker_capnp::client_message::Builder>();
     match message {
-      ClientMessage::Setup(config) => {
-        set_worker_config(root.reborrow().init_setup().init_config(), config)?;
+      ClientMessage::Setup { config, token } => {
+        let mut setup = root.reborrow().init_setup();
+        set_worker_config(setup.reborrow().init_config(), config)?;
+        set_text_opt(setup.reborrow().init_token(), token.as_deref());
       },
       ClientMessage::Work(path) => {
         set_text_list(
@@ -71,9 +76,11 @@ where
   let root = message.get_root::<worker_capnp::client_message::Reader>()?;
   match root.which()? {
     worker_capnp::client_message::Which::Setup(setup) => {
-      Ok(ClientMessage::Setup(read_worker_config(
-        setup?.get_config()?,
-      )?))
+      let setup = setup?;
+      Ok(ClientMessage::Setup {
+        config: read_worker_config(setup.get_config()?)?,
+        token:  read_text_opt(setup.get_token()?)?,
+      })
     },
     worker_capnp::client_message::Which::Work(work) => {
       Ok(ClientMessage::Work(read_text_list(work?.get_attr_path()?)?))
