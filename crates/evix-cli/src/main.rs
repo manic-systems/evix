@@ -2,6 +2,7 @@ mod args;
 
 use std::{
   env,
+  fs,
   future::Future,
   io,
   io::{BufRead, BufReader, Write},
@@ -12,7 +13,7 @@ use std::{
 
 use anyhow::{Context as _, Result, bail};
 use args::{CommandPlan, Verbosity, parse_plan};
-use evix::{Config, Event, Session, WORKER_ENV, json as evix_json};
+use evix::{Config, Event, Input, Session, WORKER_ENV, json as evix_json};
 use evix_daemon as daemon;
 use evix_protocol::{Request, Response};
 use futures_util::StreamExt as _;
@@ -60,9 +61,11 @@ fn run_plan(plan: CommandPlan) -> Result<()> {
       use_daemon,
     } => {
       if use_daemon {
-        run_client_or_local(Request::eval(&config), socket, || {
-          run_local_eval(&config)
-        })
+        run_client_or_local(
+          daemon_request(Request::eval(&config))?,
+          socket,
+          || run_local_eval(&config),
+        )
       } else {
         run_local_eval(&config)
       }
@@ -73,9 +76,11 @@ fn run_plan(plan: CommandPlan) -> Result<()> {
       use_daemon,
     } => {
       if use_daemon {
-        run_client_or_local(Request::watch(&config), socket, || {
-          run_local_watch(&config)
-        })
+        run_client_or_local(
+          daemon_request(Request::watch(&config))?,
+          socket,
+          || run_local_watch(&config),
+        )
       } else {
         run_local_watch(&config)
       }
@@ -84,9 +89,11 @@ fn run_plan(plan: CommandPlan) -> Result<()> {
       config,
       filter,
       socket,
-    } => run_daemon_only(Request::query(&config, &filter), socket),
+    } => {
+      run_daemon_only(daemon_request(Request::query(&config, &filter))?, socket)
+    },
     CommandPlan::Diff { config, socket } => {
-      run_daemon_only(Request::diff(&config), socket)
+      run_daemon_only(daemon_request(Request::diff(&config))?, socket)
     },
     CommandPlan::Daemon { socket, foreground } => {
       daemon::run(daemon::socket_path(socket), foreground)
@@ -98,6 +105,79 @@ fn run_plan(plan: CommandPlan) -> Result<()> {
       })
     },
   }
+}
+
+fn daemon_request(request: Request) -> Result<Request> {
+  Ok(match request {
+    Request::Eval { config } => {
+      Request::Eval {
+        config: daemon_config(config)?,
+      }
+    },
+    Request::Watch { config } => {
+      Request::Watch {
+        config: daemon_config(config)?,
+      }
+    },
+    Request::Query { config, filter } => {
+      Request::Query {
+        config: daemon_config(config)?,
+        filter,
+      }
+    },
+    Request::Diff { config } => {
+      Request::Diff {
+        config: daemon_config(config)?,
+      }
+    },
+  })
+}
+
+fn daemon_config(mut config: Config) -> Result<Config> {
+  config.input = match config.input {
+    Input::File(path) => {
+      Input::File(fs::canonicalize(&path).with_context(|| {
+        format!("canonicalizing input file {}", path.display())
+      })?)
+    },
+    Input::Flake(reference) => Input::Flake(daemon_flake_ref(&reference)?),
+    input => input,
+  };
+  Ok(config)
+}
+
+fn daemon_flake_ref(reference: &str) -> Result<String> {
+  if let Some(path_ref) = reference.strip_prefix("path:") {
+    let (path, fragment) = split_flake_fragment(path_ref);
+    return Ok(format!("path:{}{fragment}", canonical_flake_path(path)?));
+  }
+
+  let (path, fragment) = split_flake_fragment(reference);
+  if is_relative_flake_path(path) || Path::new(path).is_absolute() {
+    return Ok(format!("path:{}{fragment}", canonical_flake_path(path)?));
+  }
+  Ok(reference.to_owned())
+}
+
+fn split_flake_fragment(reference: &str) -> (&str, String) {
+  match reference.split_once('#') {
+    Some((path, fragment)) => (path, format!("#{fragment}")),
+    None => (reference, String::new()),
+  }
+}
+
+fn is_relative_flake_path(path: &str) -> bool {
+  path.is_empty()
+    || path == "."
+    || path.starts_with("./")
+    || path.starts_with("../")
+}
+
+fn canonical_flake_path(path: &str) -> Result<String> {
+  let path = if path.is_empty() { "." } else { path };
+  fs::canonicalize(path)
+    .with_context(|| format!("canonicalizing flake path {path:?}"))
+    .map(|path| path.to_string_lossy().into_owned())
 }
 
 fn run_client_or_local(
@@ -410,6 +490,73 @@ mod tests {
       io::Error::new(io::ErrorKind::PermissionDenied, "permission denied");
 
     assert!(!allows_local_fallback(&err));
+  }
+
+  #[test]
+  fn daemon_request_canonicalizes_file_input() {
+    let request = daemon_request(Request::eval(&Config::file("Cargo.toml")))
+      .expect("daemon request");
+
+    let Request::Eval { config } = request else {
+      panic!("expected eval request");
+    };
+    let Input::File(path) = config.input else {
+      panic!("expected file input");
+    };
+
+    assert!(path.is_absolute());
+    assert_eq!(path, fs::canonicalize("Cargo.toml").unwrap());
+  }
+
+  #[test]
+  fn daemon_request_rewrites_current_dir_flake_ref() {
+    let request = daemon_request(Request::eval(&Config::flake(".#hydraJobs")))
+      .expect("daemon request");
+
+    let Request::Eval { config } = request else {
+      panic!("expected eval request");
+    };
+    let Input::Flake(reference) = config.input else {
+      panic!("expected flake input");
+    };
+
+    let cwd = fs::canonicalize(".")
+      .unwrap()
+      .to_string_lossy()
+      .into_owned();
+    assert_eq!(reference, format!("path:{cwd}#hydraJobs"));
+  }
+
+  #[test]
+  fn daemon_request_rewrites_path_flake_ref() {
+    let reference = daemon_flake_ref("path:.#packages").unwrap();
+    let cwd = fs::canonicalize(".")
+      .unwrap()
+      .to_string_lossy()
+      .into_owned();
+
+    assert_eq!(reference, format!("path:{cwd}#packages"));
+  }
+
+  #[test]
+  fn daemon_request_rewrites_relative_path_flake_ref() {
+    let reference = daemon_flake_ref("path:Cargo.toml").unwrap();
+
+    assert_eq!(
+      reference,
+      format!(
+        "path:{}",
+        fs::canonicalize("Cargo.toml").unwrap().to_string_lossy()
+      )
+    );
+  }
+
+  #[test]
+  fn daemon_request_preserves_non_path_flake_ref() {
+    assert_eq!(
+      daemon_flake_ref("github:NixOS/nixpkgs#hello").unwrap(),
+      "github:NixOS/nixpkgs#hello"
+    );
   }
 
   fn read_request_and_close(stream: UnixStream) {

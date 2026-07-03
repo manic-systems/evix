@@ -1,7 +1,7 @@
 #[cfg(target_os = "linux")]
 use std::os::unix::io::AsRawFd as _;
 use std::{
-  collections::HashMap,
+  collections::{HashMap, VecDeque},
   env,
   fs,
   io::{BufRead, BufReader, Write},
@@ -23,10 +23,12 @@ use tokio::runtime::Builder;
 use tracing::{error, info};
 
 const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
+const MAX_SESSIONS: usize = 32;
+const MAX_CONNECTIONS: usize = 64;
 
 #[derive(Default)]
 struct DaemonState {
-  sessions: Mutex<HashMap<String, Arc<Session>>>,
+  sessions: Mutex<SessionRegistry<Arc<Session>>>,
 }
 
 impl DaemonState {
@@ -48,8 +50,56 @@ impl DaemonState {
       .lock()
       .expect("daemon session registry poisoned")
       .get(&key)
-      .cloned()
       .ok_or_else(|| anyhow::anyhow!("no warm session for requested config"))
+  }
+}
+
+struct SessionRegistry<T> {
+  sessions: HashMap<String, T>,
+  order:    VecDeque<String>,
+  max:      usize,
+}
+
+impl<T> Default for SessionRegistry<T> {
+  fn default() -> Self {
+    Self::new(MAX_SESSIONS)
+  }
+}
+
+impl<T> SessionRegistry<T> {
+  fn new(max: usize) -> Self {
+    Self {
+      sessions: HashMap::new(),
+      order: VecDeque::new(),
+      max,
+    }
+  }
+
+  fn insert(&mut self, key: String, value: T) {
+    self.remove_order_entry(&key);
+    while self.sessions.len() >= self.max {
+      let Some(oldest) = self.order.pop_front() else {
+        break;
+      };
+      self.sessions.remove(&oldest);
+    }
+    self.order.push_back(key.clone());
+    self.sessions.insert(key, value);
+  }
+
+  fn remove_order_entry(&mut self, key: &str) {
+    if let Some(index) = self.order.iter().position(|item| item == key) {
+      self.order.remove(index);
+    }
+  }
+}
+
+impl<T: Clone> SessionRegistry<T> {
+  fn get(&mut self, key: &str) -> Option<T> {
+    let value = self.sessions.get(key).cloned()?;
+    self.remove_order_entry(key);
+    self.order.push_back(key.to_owned());
+    Some(value)
   }
 }
 
@@ -77,12 +127,21 @@ pub fn run(socket: PathBuf, foreground: bool) -> Result<()> {
 
   let listener = bind_listener(&socket, reporter.as_mut())?;
   let state = Arc::new(DaemonState::default());
+  let connections = Arc::new(ConnectionLimiter::new(MAX_CONNECTIONS));
 
   for conn in listener.incoming() {
     match conn {
-      Ok(stream) => {
+      Ok(mut stream) => {
+        let Some(slot) = connections.acquire() else {
+          let _ = write_response(
+            &mut stream,
+            &Response::error("daemon connection limit exceeded"),
+          );
+          continue;
+        };
         let state = Arc::clone(&state);
         thread::spawn(move || {
+          let _slot = slot;
           if let Err(err) = handle_connection(state, stream) {
             error!(error = %err, "daemon connection failed");
           }
@@ -93,6 +152,46 @@ pub fn run(socket: PathBuf, foreground: bool) -> Result<()> {
   }
 
   Ok(())
+}
+
+struct ConnectionLimiter {
+  active: Mutex<usize>,
+  max:    usize,
+}
+
+impl ConnectionLimiter {
+  fn new(max: usize) -> Self {
+    Self {
+      active: Mutex::new(0),
+      max,
+    }
+  }
+
+  fn acquire(self: &Arc<Self>) -> Option<ConnectionSlot> {
+    let mut active = self.active.lock().expect("connection limit poisoned");
+    if *active >= self.max {
+      return None;
+    }
+    *active += 1;
+    Some(ConnectionSlot {
+      limiter: Arc::clone(self),
+    })
+  }
+}
+
+struct ConnectionSlot {
+  limiter: Arc<ConnectionLimiter>,
+}
+
+impl Drop for ConnectionSlot {
+  fn drop(&mut self) {
+    let mut active = self
+      .limiter
+      .active
+      .lock()
+      .expect("connection limit poisoned");
+    *active -= 1;
+  }
 }
 
 fn bind_listener(
@@ -220,6 +319,12 @@ fn daemonize(socket: &Path) -> Result<PipeStartupReporter> {
   }
   if pid > 0 {
     process::exit(0);
+  }
+
+  if let Err(err) =
+    env::set_current_dir("/").context("changing daemon working directory to /")
+  {
+    exit_after_startup_error(reporter, err);
   }
 
   let pid_path = pid_path();
@@ -517,6 +622,32 @@ mod tests {
         .unwrap()
         .contains("no warm session for requested config")
     );
+  }
+
+  #[test]
+  fn session_registry_evicts_least_recently_used_entry() {
+    let mut registry = SessionRegistry::new(2);
+    registry.insert("a".into(), 1);
+    registry.insert("b".into(), 2);
+    assert_eq!(registry.get("a"), Some(1));
+
+    registry.insert("c".into(), 3);
+
+    assert_eq!(registry.get("b"), None);
+    assert_eq!(registry.get("a"), Some(1));
+    assert_eq!(registry.get("c"), Some(3));
+  }
+
+  #[test]
+  fn connection_limiter_releases_slots_on_drop() {
+    let limiter = Arc::new(ConnectionLimiter::new(1));
+    let slot = limiter.acquire().expect("first slot");
+
+    assert!(limiter.acquire().is_none());
+
+    drop(slot);
+
+    assert!(limiter.acquire().is_some());
   }
 
   #[test]
