@@ -23,12 +23,13 @@ where
 {
   let mut accumulator = EvalAccumulator::default();
 
-  let outcome = crate::async_master::run(config, Arc::clone(&cancel), |event| {
-    accumulator.record(&event);
-    let result = on_event(event);
-    async move { result }
-  })
-  .await?;
+  let outcome =
+    crate::async_master::run(config, Arc::clone(&cancel), |event| {
+      accumulator.record(&event);
+      let result = on_event(event);
+      async move { result }
+    })
+    .await?;
 
   Ok((accumulator.graph, accumulator.errors, outcome))
 }
