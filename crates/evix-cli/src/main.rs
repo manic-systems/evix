@@ -60,11 +60,9 @@ fn run_plan(plan: CommandPlan) -> Result<()> {
       use_daemon,
     } => {
       if use_daemon {
-        run_client_or_local(
-          Request::eval(&config),
-          socket,
-          LocalFallback::Eval(config),
-        )
+        run_client_or_local(Request::eval(&config), socket, || {
+          run_local_eval(&config)
+        })
       } else {
         run_local_eval(&config)
       }
@@ -75,11 +73,9 @@ fn run_plan(plan: CommandPlan) -> Result<()> {
       use_daemon,
     } => {
       if use_daemon {
-        run_client_or_local(
-          Request::watch(&config),
-          socket,
-          LocalFallback::Watch(config),
-        )
+        run_client_or_local(Request::watch(&config), socket, || {
+          run_local_watch(&config)
+        })
       } else {
         run_local_watch(&config)
       }
@@ -104,32 +100,16 @@ fn run_plan(plan: CommandPlan) -> Result<()> {
   }
 }
 
-enum LocalFallback {
-  Eval(Config),
-  Watch(Config),
-}
-
 fn run_client_or_local(
   request: Request,
   socket: Option<PathBuf>,
-  fallback: LocalFallback,
+  fallback: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
   let socket = daemon::socket_path(socket);
   match UnixStream::connect(&socket) {
     Ok(stream) => run_daemon_request(stream, &request),
-    Err(err)
-      if matches!(
-        err.kind(),
-        io::ErrorKind::NotFound
-          | io::ErrorKind::ConnectionRefused
-          | io::ErrorKind::PermissionDenied
-      ) =>
-    {
-      run_fallback(fallback)
-    },
-    Err(err) => {
-      Err(err).with_context(|| format!("connecting to {}", socket.display()))
-    },
+    Err(err) if allows_local_fallback(&err) => fallback(),
+    Err(err) => Err(daemon_connect_error(&socket, err)),
   }
 }
 
@@ -149,11 +129,8 @@ fn daemon_connect_context(socket: &Path) -> String {
   format!("connecting to evix daemon at {}", socket.display())
 }
 
-fn run_fallback(fallback: LocalFallback) -> Result<()> {
-  match fallback {
-    LocalFallback::Eval(config) => run_local_eval(&config),
-    LocalFallback::Watch(config) => run_local_watch(&config),
-  }
+fn allows_local_fallback(err: &io::Error) -> bool {
+  err.kind() == io::ErrorKind::NotFound
 }
 
 fn run_daemon_request(mut stream: UnixStream, request: &Request) -> Result<()> {
@@ -370,6 +347,69 @@ mod tests {
         .any(|message| message.contains("permission denied")),
       "{messages:?}"
     );
+  }
+
+  #[test]
+  fn client_or_local_falls_back_for_missing_socket() {
+    let socket = unique_socket_path("fallback-missing");
+    let mut fell_back = false;
+
+    run_client_or_local(
+      Request::eval(&Config::default()),
+      Some(socket),
+      || {
+        fell_back = true;
+        Ok(())
+      },
+    )
+    .unwrap();
+
+    assert!(fell_back);
+  }
+
+  #[test]
+  fn client_or_local_reports_connection_refused_source() {
+    let socket = unique_socket_path("fallback-refused");
+    let listener = UnixListener::bind(&socket).unwrap();
+    drop(listener);
+    let mut fell_back = false;
+
+    let error = run_client_or_local(
+      Request::eval(&Config::default()),
+      Some(socket.clone()),
+      || {
+        fell_back = true;
+        Ok(())
+      },
+    )
+    .unwrap_err();
+    let messages = error_chain_messages(&error);
+
+    assert!(!fell_back);
+    assert!(
+      messages[0].contains(&format!(
+        "connecting to evix daemon at {}",
+        socket.display()
+      )),
+      "{messages:?}"
+    );
+    assert!(
+      messages.iter().any(|message| {
+        message.contains("Connection refused")
+          || message.contains("os error 111")
+      }),
+      "{messages:?}"
+    );
+
+    let _ = fs::remove_file(socket);
+  }
+
+  #[test]
+  fn local_fallback_rejects_permission_denied() {
+    let err =
+      io::Error::new(io::ErrorKind::PermissionDenied, "permission denied");
+
+    assert!(!allows_local_fallback(&err));
   }
 
   fn read_request_and_close(stream: UnixStream) {
