@@ -21,9 +21,10 @@ use crate::{
   Config,
   Diff,
   Error,
+  EvalError,
   Input,
   run,
-  state::{WarmState, diff_graphs},
+  state::{EvalGraph, WarmState, diff_graphs},
 };
 
 pub async fn watch_loop(
@@ -93,21 +94,14 @@ async fn watch_loop_with_sender(
       Ok(Some(Ok(_event))) => {
         debounce_watch_events(&mut watch_rx).await;
         let previous = state.read().await.graph.clone();
-        let (graph, errors, outcome) =
-          run::evaluate(config.clone(), Arc::clone(&cancel), |_| Ok(()))
-            .await?;
-        if outcome == run::RunOutcome::Cancelled {
+        let result =
+          run::evaluate(config.clone(), Arc::clone(&cancel), |_| Ok(())).await;
+        if apply_watch_evaluation_result(result, previous, &state, &mut tx)
+          .await?
+          == WatchAction::Stop
+        {
           break;
         }
-        let diff = diff_graphs(&previous, &graph, errors.clone());
-        {
-          let mut state = state.write().await;
-          state.graph = graph;
-          state.errors = errors;
-          state.completed = true;
-          state.error = None;
-        }
-        tx.send(Ok(diff)).await?;
       },
       Ok(Some(Err(err))) => {
         tx.send(Err(Error::from(anyhow!("filesystem watch error: {err}"))))
@@ -119,6 +113,42 @@ async fn watch_loop_with_sender(
   }
 
   Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WatchAction {
+  Continue,
+  Stop,
+}
+
+async fn apply_watch_evaluation_result(
+  result: AnyhowResult<(EvalGraph, Vec<EvalError>, run::RunOutcome)>,
+  previous: EvalGraph,
+  state: &RwLock<WarmState>,
+  tx: &mut WatchSender,
+) -> AnyhowResult<WatchAction> {
+  let (graph, errors, outcome) = match result {
+    Ok(result) => result,
+    Err(err) => {
+      tx.send(Err(Error::from(err))).await?;
+      return Ok(WatchAction::Continue);
+    },
+  };
+
+  if outcome == run::RunOutcome::Cancelled {
+    return Ok(WatchAction::Stop);
+  }
+
+  let diff = diff_graphs(&previous, &graph, errors.clone());
+  {
+    let mut state = state.write().await;
+    state.graph = graph;
+    state.errors = errors;
+    state.completed = true;
+    state.error = None;
+  }
+  tx.send(Ok(diff)).await?;
+  Ok(WatchAction::Continue)
 }
 
 enum WatchSender {
@@ -247,10 +277,25 @@ fn local_path_inputs(root: &Path) -> AnyhowResult<Vec<PathBuf>> {
 
 #[cfg(test)]
 mod tests {
-  use std::path::PathBuf;
+  use std::{collections::BTreeMap, path::PathBuf};
 
-  use super::{local_flake_root, watched_paths};
-  use crate::{Config, Input};
+  use futures_channel::mpsc as futures_mpsc;
+  use futures_util::StreamExt as _;
+  use tokio::sync::RwLock;
+
+  use super::{
+    WatchAction,
+    WatchSender,
+    apply_watch_evaluation_result,
+    local_flake_root,
+    watched_paths,
+  };
+  use crate::{
+    Config,
+    Derivation,
+    Input,
+    state::{EvalGraph, WarmState},
+  };
 
   #[test]
   fn local_flake_root_accepts_path_refs_and_fragments() {
@@ -272,5 +317,57 @@ mod tests {
     .to_string();
 
     assert!(error.contains("watch requires a file or local flake input"));
+  }
+
+  #[test]
+  fn watch_eval_error_is_reported_without_replacing_warm_state() {
+    tokio::runtime::Builder::new_current_thread()
+      .enable_time()
+      .build()
+      .unwrap()
+      .block_on(async {
+        let drv = derivation("old");
+        let graph = EvalGraph::from([(drv.attr_path.clone(), drv.clone())]);
+        let state = RwLock::new(WarmState {
+          graph: graph.clone(),
+          completed: true,
+          ..WarmState::default()
+        });
+        let (tx, mut rx) = futures_mpsc::unbounded();
+        let mut tx = WatchSender::Unbounded(tx);
+
+        let action = apply_watch_evaluation_result(
+          Err(anyhow::anyhow!("broken eval")),
+          graph.clone(),
+          &state,
+          &mut tx,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(action, WatchAction::Continue);
+        let error = rx.next().await.unwrap().unwrap_err();
+        assert!(error.to_string().contains("broken eval"));
+
+        let state = state.read().await;
+        assert_eq!(state.graph[&drv.attr_path].drv_path, drv.drv_path);
+        assert!(state.completed);
+        assert!(state.error.is_none());
+      });
+  }
+
+  fn derivation(name: &str) -> Derivation {
+    Derivation {
+      attr:          name.into(),
+      attr_path:     vec![name.into()],
+      name:          name.into(),
+      system:        "x86_64-linux".into(),
+      drv_path:      format!("/nix/store/{name}.drv"),
+      outputs:       BTreeMap::new(),
+      meta:          None,
+      input_drvs:    BTreeMap::new(),
+      constituents:  None,
+      gc_root_error: None,
+    }
   }
 }
