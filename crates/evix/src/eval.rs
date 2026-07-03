@@ -1,14 +1,19 @@
 use std::{
   collections::BTreeMap,
+  ffi::OsString,
+  fs,
+  io,
   os::unix::fs as unix_fs,
-  path::{Path, PathBuf},
+  path::{Component, Path, PathBuf},
 };
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use nix_bindings::{EvalState, Store, StorePath, Value, ValueType};
 use tracing::{debug, warn};
 
 use crate::{EvalError, Event};
+
+const NIX_GCROOTS_DIR: &str = "/nix/var/nix/gcroots";
 
 #[derive(Debug, Clone)]
 pub(crate) struct EvalOptions {
@@ -414,16 +419,163 @@ fn output_path_for(value: &Value<'_>, name: &str) -> Option<String> {
   out.as_path().ok().map(|p| p.to_string_lossy().into_owned())
 }
 
-/// Create a symlink under `gc_dir` pointing to `drv_path` so the Nix garbage
-/// collector retains the derivation and its outputs.
+/// Create a direct Nix GC root symlink for `drv_path`.
 fn register_gc_root(gc_dir: &Path, drv_path: &str) -> Result<()> {
+  ensure_gc_roots_dir(gc_dir)?;
+  create_gc_root_link(gc_dir, drv_path)
+}
+
+fn ensure_gc_roots_dir(gc_dir: &Path) -> Result<()> {
+  let normalized = validate_gc_roots_dir_path(gc_dir)?;
+  fs::create_dir_all(&normalized).with_context(|| {
+    format!("creating gc roots dir {}", normalized.display())
+  })?;
+
+  let root = Path::new(NIX_GCROOTS_DIR)
+    .canonicalize()
+    .with_context(|| format!("canonicalizing {NIX_GCROOTS_DIR}"))?;
+  let canonical = normalized
+    .canonicalize()
+    .with_context(|| format!("canonicalizing {}", normalized.display()))?;
+  if !canonical.starts_with(&root) {
+    bail!(
+      "gc roots dir resolves outside {NIX_GCROOTS_DIR}: {}",
+      gc_dir.display()
+    );
+  }
+
+  Ok(())
+}
+
+fn validate_gc_roots_dir_path(gc_dir: &Path) -> Result<PathBuf> {
+  let normalized = normalize_absolute(gc_dir)?;
+  if !normalized.starts_with(NIX_GCROOTS_DIR) {
+    bail!(
+      "gc roots dir must be under {NIX_GCROOTS_DIR}: {}",
+      gc_dir.display()
+    );
+  }
+  Ok(normalized)
+}
+
+fn normalize_absolute(path: &Path) -> Result<PathBuf> {
+  let mut absolute = false;
+  let mut parts = Vec::<OsString>::new();
+
+  for component in path.components() {
+    match component {
+      Component::RootDir => {
+        absolute = true;
+        parts.clear();
+      },
+      Component::CurDir => {},
+      Component::Normal(part) => parts.push(part.to_os_string()),
+      Component::ParentDir => {
+        if parts.pop().is_none() {
+          bail!("path escapes filesystem root: {}", path.display());
+        }
+      },
+      Component::Prefix(_) => {
+        bail!("unsupported path prefix: {}", path.display());
+      },
+    }
+  }
+
+  if !absolute {
+    bail!("gc roots dir must be absolute: {}", path.display());
+  }
+
+  let mut normalized = PathBuf::from("/");
+  for part in parts {
+    normalized.push(part);
+  }
+  Ok(normalized)
+}
+
+fn create_gc_root_link(gc_dir: &Path, drv_path: &str) -> Result<()> {
   let name = Path::new(drv_path)
     .file_name()
     .context("drv path has no filename")?;
   let link = gc_dir.join(name);
-  if !link.exists() {
-    unix_fs::symlink(drv_path, &link)
-      .with_context(|| format!("symlinking {link:?} -> {drv_path}"))?;
+  match fs::symlink_metadata(&link) {
+    Ok(_) => return Ok(()),
+    Err(err) if err.kind() == io::ErrorKind::NotFound => {},
+    Err(err) => {
+      return Err(err)
+        .with_context(|| format!("checking gc root {}", link.display()));
+    },
   }
+
+  unix_fs::symlink(drv_path, &link)
+    .with_context(|| format!("symlinking {} -> {drv_path}", link.display()))?;
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use std::{
+    env,
+    process,
+    time::{SystemTime, UNIX_EPOCH},
+  };
+
+  use super::*;
+
+  #[test]
+  fn gc_root_dir_accepts_nix_gcroot_subdir() {
+    assert_eq!(
+      validate_gc_roots_dir_path(Path::new(
+        "/nix/var/nix/gcroots/./evix/../evix"
+      ))
+      .unwrap(),
+      PathBuf::from("/nix/var/nix/gcroots/evix")
+    );
+  }
+
+  #[test]
+  fn gc_root_dir_rejects_paths_outside_nix_gcroot_tree() {
+    let error =
+      validate_gc_roots_dir_path(Path::new("/tmp/evix-gcroots")).unwrap_err();
+
+    assert!(error.to_string().contains(NIX_GCROOTS_DIR), "{error:?}");
+  }
+
+  #[test]
+  fn gc_root_dir_rejects_parent_escape_from_nix_gcroot_tree() {
+    let error =
+      validate_gc_roots_dir_path(Path::new("/nix/var/nix/gcroots/../bad"))
+        .unwrap_err();
+
+    assert!(error.to_string().contains(NIX_GCROOTS_DIR), "{error:?}");
+  }
+
+  #[test]
+  fn gc_root_dir_rejects_relative_path() {
+    let error = validate_gc_roots_dir_path(Path::new("gcroots")).unwrap_err();
+
+    assert!(error.to_string().contains("absolute"), "{error:?}");
+  }
+
+  #[test]
+  fn gc_root_link_treats_dangling_symlink_as_existing() {
+    let dir = unique_temp_dir("dangling-gcroot");
+    fs::create_dir(&dir).unwrap();
+    let drv_path = "/nix/store/00000000000000000000000000000000-evix.drv";
+
+    create_gc_root_link(&dir, drv_path).unwrap();
+    create_gc_root_link(&dir, drv_path).unwrap();
+
+    let link = dir.join("00000000000000000000000000000000-evix.drv");
+    assert_eq!(fs::read_link(link).unwrap(), PathBuf::from(drv_path));
+
+    fs::remove_dir_all(dir).unwrap();
+  }
+
+  fn unique_temp_dir(name: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+      .duration_since(UNIX_EPOCH)
+      .unwrap()
+      .as_nanos();
+    env::temp_dir().join(format!("evix-{name}-{}-{nanos}", process::id()))
+  }
 }
