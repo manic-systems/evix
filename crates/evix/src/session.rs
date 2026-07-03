@@ -22,7 +22,7 @@ use crate::{
   Event,
   Filter,
   Result,
-  run,
+  run::{self, RunOutcome},
   state::{WarmState, diff_graphs, matches_filter},
   watch,
 };
@@ -84,7 +84,7 @@ impl Session {
       tx.clone(),
       async move {
         let event_tx = tx.clone();
-        if let Err(err) = evaluate_initial(
+        match evaluate_initial(
           config,
           cancel,
           Arc::clone(&state),
@@ -100,11 +100,22 @@ impl Session {
         )
         .await
         {
-          let message = err.to_string();
-          record_initial_error(&state, &completed, &initial, message).await;
-          let _ = tx.unbounded_send(Err(Error::from(err)));
-        } else {
-          finish_initial_evaluation(&initial);
+          Ok(RunOutcome::Completed) => finish_initial_evaluation(&initial),
+          Ok(RunOutcome::Cancelled) => {
+            record_initial_error(
+              &state,
+              &completed,
+              &initial,
+              Error::Cancelled.to_string(),
+            )
+            .await;
+            let _ = tx.unbounded_send(Err(Error::Cancelled));
+          },
+          Err(err) => {
+            let message = err.to_string();
+            record_initial_error(&state, &completed, &initial, message).await;
+            let _ = tx.unbounded_send(Err(Error::from(err)));
+          },
         }
       },
       spawn_state,
@@ -143,7 +154,7 @@ impl Session {
       tx.clone(),
       async move {
         let event_tx = tx.clone();
-        if let Err(err) = evaluate_initial(
+        match evaluate_initial(
           config,
           cancel,
           Arc::clone(&state),
@@ -160,11 +171,22 @@ impl Session {
         )
         .await
         {
-          let message = err.to_string();
-          record_initial_error(&state, &completed, &initial, message).await;
-          let _ = tx.send(Err(Error::from(err))).await;
-        } else {
-          finish_initial_evaluation(&initial);
+          Ok(RunOutcome::Completed) => finish_initial_evaluation(&initial),
+          Ok(RunOutcome::Cancelled) => {
+            record_initial_error(
+              &state,
+              &completed,
+              &initial,
+              Error::Cancelled.to_string(),
+            )
+            .await;
+            let _ = tx.send(Err(Error::Cancelled)).await;
+          },
+          Err(err) => {
+            let message = err.to_string();
+            record_initial_error(&state, &completed, &initial, message).await;
+            let _ = tx.send(Err(Error::from(err))).await;
+          },
         }
       },
       spawn_state,
@@ -195,8 +217,8 @@ impl Session {
     spawn_session_task(
       tx.clone(),
       async move {
-        if start_initial
-          && let Err(err) = evaluate_initial(
+        if start_initial {
+          match evaluate_initial(
             config.clone(),
             Arc::clone(&cancel),
             Arc::clone(&state),
@@ -204,13 +226,27 @@ impl Session {
             |_| async { Ok(()) },
           )
           .await
-        {
-          let message = err.to_string();
-          record_initial_error(&state, &completed, &initial, message).await;
-          let _ = tx.unbounded_send(Err(Error::from(err)));
-          return;
-        } else if start_initial {
-          finish_initial_evaluation(&initial);
+          {
+            Ok(RunOutcome::Completed) => finish_initial_evaluation(&initial),
+            Ok(RunOutcome::Cancelled) => {
+              record_initial_error(
+                &state,
+                &completed,
+                &initial,
+                Error::Cancelled.to_string(),
+              )
+              .await;
+              let _ = tx.unbounded_send(Err(Error::Cancelled));
+              return;
+            },
+            Err(err) => {
+              let message = err.to_string();
+              record_initial_error(&state, &completed, &initial, message)
+                .await;
+              let _ = tx.unbounded_send(Err(Error::from(err)));
+              return;
+            },
+          }
         }
 
         if let Err(err) =
@@ -249,8 +285,8 @@ impl Session {
     spawn_session_task_bounded(
       tx.clone(),
       async move {
-        if start_initial
-          && let Err(err) = evaluate_initial(
+        if start_initial {
+          match evaluate_initial(
             config.clone(),
             Arc::clone(&cancel),
             Arc::clone(&state),
@@ -258,13 +294,27 @@ impl Session {
             |_| async { Ok(()) },
           )
           .await
-        {
-          let message = err.to_string();
-          record_initial_error(&state, &completed, &initial, message).await;
-          let _ = tx.send(Err(Error::from(err))).await;
-          return;
-        } else if start_initial {
-          finish_initial_evaluation(&initial);
+          {
+            Ok(RunOutcome::Completed) => finish_initial_evaluation(&initial),
+            Ok(RunOutcome::Cancelled) => {
+              record_initial_error(
+                &state,
+                &completed,
+                &initial,
+                Error::Cancelled.to_string(),
+              )
+              .await;
+              let _ = tx.send(Err(Error::Cancelled)).await;
+              return;
+            },
+            Err(err) => {
+              let message = err.to_string();
+              record_initial_error(&state, &completed, &initial, message)
+                .await;
+              let _ = tx.send(Err(Error::from(err))).await;
+              return;
+            },
+          }
         }
 
         if let Err(err) = watch::watch_loop_bounded(
@@ -326,9 +376,12 @@ impl Session {
       }
       guard.graph.clone()
     };
-    let (graph, errors) =
+    let (graph, errors, outcome) =
       run::evaluate(self.config.clone(), Arc::clone(&self.cancel), |_| Ok(()))
         .await?;
+    if outcome == RunOutcome::Cancelled {
+      return Err(Error::Cancelled);
+    }
     let diff = diff_graphs(&previous, &graph, errors.clone());
     {
       let mut state = self.state.write().await;
@@ -384,7 +437,7 @@ async fn evaluate_initial<F, Fut>(
   state: Arc<RwLock<WarmState>>,
   completed: Arc<Notify>,
   on_event: F,
-) -> AnyhowResult<()>
+) -> AnyhowResult<RunOutcome>
 where
   F: FnMut(Event) -> Fut + Send + 'static,
   Fut: Future<Output = AnyhowResult<()>>,
@@ -393,7 +446,7 @@ where
   let result = run::evaluate_async(config, Arc::clone(&cancel), on_event).await;
 
   match result {
-    Ok((graph, errors)) => {
+    Ok((graph, errors, RunOutcome::Completed)) => {
       let mut state = state.write().await;
       state.graph = graph;
       state.errors = errors;
@@ -401,7 +454,15 @@ where
       state.error = None;
       completed.notify_waiters();
       debug!("session evaluation completed");
-      Ok(())
+      Ok(RunOutcome::Completed)
+    },
+    Ok((_, _, RunOutcome::Cancelled)) => {
+      // The accumulated graph is partial; leave the warm state untouched so
+      // queries keep failing with "initial evaluation incomplete" instead of
+      // silently serving a truncated graph.
+      debug!("session evaluation cancelled");
+      completed.notify_waiters();
+      Ok(RunOutcome::Cancelled)
     },
     Err(err) => {
       error!(error = %err, "session evaluation failed");

@@ -16,6 +16,8 @@ pub enum Error {
   /// A background task could not be spawned because no Tokio runtime was
   /// active.
   RuntimeUnavailable { message: String },
+  /// Evaluation was cancelled before it completed.
+  Cancelled,
   /// An internal evaluator, worker, I/O, serialization, or protocol error.
   Internal { message: String },
 }
@@ -44,6 +46,7 @@ impl fmt::Display for Error {
         )
       },
       Self::SessionStillEvaluating => write!(f, "session is still evaluating"),
+      Self::Cancelled => write!(f, "evaluation was cancelled"),
       Self::EvaluationFailed { message }
       | Self::RuntimeUnavailable { message }
       | Self::Internal { message } => f.write_str(message),

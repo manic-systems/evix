@@ -87,11 +87,19 @@ struct CompletedWork {
   fatal_error: Option<String>,
 }
 
+/// How an evaluation run ended. A cancelled run's results are partial and
+/// must not be treated as a complete graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RunOutcome {
+  Completed,
+  Cancelled,
+}
+
 pub async fn run<F, Fut>(
   config: Config,
   cancel: Arc<AtomicBool>,
   on_event: F,
-) -> Result<()>
+) -> Result<RunOutcome>
 where
   F: FnMut(Event) -> Fut,
   Fut: Future<Output = Result<()>>,
@@ -141,9 +149,7 @@ where
   )
   .await;
   shutdown_workers(workers).await?;
-  result?;
-
-  Ok(())
+  result
 }
 
 fn validate_config(config: &Config) -> Result<()> {
@@ -322,7 +328,7 @@ async fn coordinate<F, Fut>(
   result_rx: &mut mpsc::Receiver<WorkerResult>,
   cancel: &AtomicBool,
   mut on_event: F,
-) -> Result<()>
+) -> Result<RunOutcome>
 where
   F: FnMut(Event) -> Fut,
   Fut: Future<Output = Result<()>>,
@@ -332,16 +338,16 @@ where
   loop {
     if cancel.load(Ordering::Relaxed) {
       info!("cancellation requested, evaluation coordinator exiting");
-      return Ok(());
+      return Ok(RunOutcome::Cancelled);
     }
 
     match dispatch_available(scheduler, workers, &mut idle).await? {
-      DispatchState::Done => return Ok(()),
+      DispatchState::Done => return Ok(RunOutcome::Completed),
       DispatchState::Running => {},
     }
 
     if scheduler.is_done() {
-      return Ok(());
+      return Ok(RunOutcome::Completed);
     }
     if !scheduler.has_active_work() && idle.len() == workers.len() {
       bail!("scheduler stalled with no active workers");
