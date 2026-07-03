@@ -266,6 +266,8 @@ pub struct Remote {
   pub endpoint: String,
   pub systems:  Vec<String>,
   pub workers:  usize,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub token:    Option<String>,
 }
 
 /// A derivation emitted by evaluation.
@@ -412,8 +414,8 @@ pub fn run_worker_if_requested() -> Result<bool> {
 }
 
 /// Serve remote evaluation workers over Cap'n Proto stream framing.
-pub async fn serve_remote_worker(addr: &str) -> Result<()> {
-  remote_worker::serve(addr).await.map_err(Error::from)
+pub async fn serve_remote_worker(addr: &str, token: &str) -> Result<()> {
+  remote_worker::serve(addr, token).await.map_err(Error::from)
 }
 
 #[cfg(test)]
@@ -459,6 +461,7 @@ mod tests {
         endpoint: "127.0.0.1:9000".into(),
         systems:  vec!["x86_64-linux".into()],
         workers:  2,
+        token:    Some("secret".into()),
       })
       .worker_exe("evix-worker")
       .build();
