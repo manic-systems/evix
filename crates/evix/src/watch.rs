@@ -93,9 +93,12 @@ async fn watch_loop_with_sender(
       Ok(Some(Ok(_event))) => {
         debounce_watch_events(&mut watch_rx).await;
         let previous = state.read().await.graph.clone();
-        let (graph, errors) =
+        let (graph, errors, outcome) =
           run::evaluate(config.clone(), Arc::clone(&cancel), |_| Ok(()))
             .await?;
+        if outcome == run::RunOutcome::Cancelled {
+          break;
+        }
         let diff = diff_graphs(&previous, &graph, errors.clone());
         {
           let mut state = state.write().await;
