@@ -226,6 +226,16 @@ in
       def stop_daemon():
           host.succeed("test ! -e /tmp/evixd.pid || kill $(cat /tmp/evixd.pid) 2>/dev/null || true")
 
+      def start_evixd():
+          host.succeed("rm -f /tmp/evixd.sock /tmp/evixd-standalone.log /tmp/evixd-standalone.pid")
+          host.succeed(
+              "evixd --socket /tmp/evixd.sock --foreground > /tmp/evixd-standalone.log 2>&1 & echo $! > /tmp/evixd-standalone.pid"
+          )
+          host.wait_until_succeeds("test -S /tmp/evixd.sock")
+
+      def stop_evixd():
+          host.succeed("test ! -e /tmp/evixd-standalone.pid || kill $(cat /tmp/evixd-standalone.pid) 2>/dev/null || true")
+
       def start_worker():
           worker.succeed("rm -f /tmp/evix-worker.log /tmp/evix-worker.pid")
           worker.succeed(
@@ -308,6 +318,16 @@ in
               assert_meta("/tmp/evix-file-query.ndjson", "client", "client fixture")
           finally:
               stop_daemon()
+
+      with subtest("standalone evixd eval"):
+          start_evixd()
+          try:
+              host.succeed(
+                  "evix eval --socket /tmp/evixd.sock --flake path:/tmp/evix-fixture#hydraJobs > /tmp/evixd-eval.ndjson"
+              )
+              assert_derivation("/tmp/evixd-eval.ndjson", f"{SYSTEM}.smoke", "evix-smoke")
+          finally:
+              stop_evixd()
 
       with subtest("remote worker evaluation"):
           host.succeed(

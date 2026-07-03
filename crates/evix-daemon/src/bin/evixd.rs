@@ -1,4 +1,4 @@
-use std::{io, path::PathBuf};
+use std::{env, io, path::PathBuf};
 
 use anyhow::Result;
 use pound::Parse;
@@ -24,6 +24,15 @@ struct Args {
 }
 
 fn main() -> Result<()> {
+  // Local workers re-exec the current binary with EVIX_WORKER set. Enter the
+  // worker protocol before doing anything daemon-shaped, otherwise every
+  // evaluation spawns another daemon instead of a worker.
+  if env::var_os(evix::WORKER_ENV).is_some() {
+    init_tracing_subscriber(0, 0);
+    evix::run_worker()?;
+    return Ok(());
+  }
+
   let args = Args::parse();
   init_tracing_subscriber(args.verbose, args.quiet);
   evix_daemon::run(evix_daemon::socket_path(args.socket), args.foreground)
