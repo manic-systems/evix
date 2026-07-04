@@ -202,6 +202,7 @@ Like `query`, `diff` requires an existing warm daemon session.
 | `--show-input-drvs`           | Include input derivations from each `.drv` file             |
 | `--workers N`                 | Local worker process count, default `1`                     |
 | `--max-memory MB`             | Memory limit per local worker, default `4096`               |
+| `--item-timeout-seconds N`    | Per-attribute worker timeout, default `1800`                |
 | `--force-recurse`             | Recurse into all attrsets, ignoring `recurseForDerivations` |
 | `--gc-roots-dir DIR`          | Register GC root symlinks for evaluated derivations         |
 | `--socket PATH`               | Daemon socket path for daemon-backed commands               |
