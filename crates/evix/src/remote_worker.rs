@@ -1,4 +1,5 @@
-use std::{sync::Arc, time::Duration};
+#[cfg(unix)] use std::os::fd::AsRawFd as _;
+use std::{mem, sync::Arc, time::Duration};
 
 use anyhow::{Context as _, Result, bail};
 use futures_util::AsyncRead;
@@ -52,6 +53,9 @@ pub async fn serve(addr: &str, token: Option<&str>) -> Result<()> {
     if let Err(err) = stream.set_nodelay(true) {
       error!(peer = %peer, error = %err, "failed to set TCP_NODELAY");
     }
+    if let Err(err) = set_tcp_keepalive(&stream) {
+      error!(peer = %peer, error = %err, "failed to enable TCP keepalive");
+    }
     let token = token.map(str::to_owned);
     tokio::spawn(async move {
       let _permit = permit;
@@ -83,6 +87,9 @@ impl RemoteWorker {
     // item is not delayed waiting to coalesce.
     tcp.set_nodelay(true).with_context(|| {
       format!("setting TCP_NODELAY on connection to {label}")
+    })?;
+    set_tcp_keepalive(&tcp).with_context(|| {
+      format!("enabling TCP keepalive on connection to {label}")
     })?;
     let mut stream = tcp.compat();
 
@@ -264,6 +271,32 @@ where
   timeout(REMOTE_READ_TIMEOUT, remote_proto::read_server(reader))
     .await
     .context("timed out reading remote worker response")?
+}
+
+#[cfg(unix)]
+fn set_tcp_keepalive(stream: &TcpStream) -> Result<()> {
+  let enabled: libc::c_int = 1;
+  let result = unsafe {
+    libc::setsockopt(
+      stream.as_raw_fd(),
+      libc::SOL_SOCKET,
+      libc::SO_KEEPALIVE,
+      (&raw const enabled).cast(),
+      mem::size_of_val(&enabled)
+        .try_into()
+        .context("SO_KEEPALIVE option length does not fit socklen_t")?,
+    )
+  };
+  if result == -1 {
+    return Err(std::io::Error::last_os_error())
+      .context("setsockopt(SO_KEEPALIVE)");
+  }
+  Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_tcp_keepalive(_stream: &TcpStream) -> Result<()> {
+  Ok(())
 }
 
 #[cfg(test)]

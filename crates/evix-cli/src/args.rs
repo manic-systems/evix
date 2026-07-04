@@ -51,6 +51,8 @@ enum Commands {
     workers:                   usize,
     #[pound(long, alias = "max-memory-size", default = "4096")]
     max_memory:                usize,
+    #[pound(long, default = "1800")]
+    item_timeout_seconds:      u64,
     #[pound(long)]
     force_recurse:             bool,
     #[pound(long)]
@@ -91,6 +93,8 @@ enum Commands {
     workers:                   usize,
     #[pound(long, alias = "max-memory-size", default = "4096")]
     max_memory:                usize,
+    #[pound(long, default = "1800")]
+    item_timeout_seconds:      u64,
     #[pound(long)]
     force_recurse:             bool,
     #[pound(long)]
@@ -131,6 +135,8 @@ enum Commands {
     workers:                   usize,
     #[pound(long, alias = "max-memory-size", default = "4096")]
     max_memory:                usize,
+    #[pound(long, default = "1800")]
+    item_timeout_seconds:      u64,
     #[pound(long)]
     force_recurse:             bool,
     #[pound(long)]
@@ -175,6 +181,8 @@ enum Commands {
     workers:                   usize,
     #[pound(long, alias = "max-memory-size", default = "4096")]
     max_memory:                usize,
+    #[pound(long, default = "1800")]
+    item_timeout_seconds:      u64,
     #[pound(long)]
     force_recurse:             bool,
     #[pound(long)]
@@ -333,6 +341,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
       show_input_drvs,
       workers,
       max_memory,
+      item_timeout_seconds,
       force_recurse,
       gc_roots_dir,
       socket,
@@ -354,6 +363,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
           show_input_drvs,
           workers,
           max_memory,
+          item_timeout_seconds,
           force_recurse,
           gc_roots_dir,
         })?,
@@ -376,6 +386,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
       show_input_drvs,
       workers,
       max_memory,
+      item_timeout_seconds,
       force_recurse,
       gc_roots_dir,
       socket,
@@ -396,6 +407,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
         show_input_drvs,
         workers,
         max_memory,
+        item_timeout_seconds,
         force_recurse,
         gc_roots_dir,
       })?;
@@ -423,6 +435,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
       show_input_drvs,
       workers,
       max_memory,
+      item_timeout_seconds,
       force_recurse,
       gc_roots_dir,
       socket,
@@ -447,6 +460,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
           show_input_drvs,
           workers,
           max_memory,
+          item_timeout_seconds,
           force_recurse,
           gc_roots_dir,
         })?,
@@ -469,6 +483,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
       show_input_drvs,
       workers,
       max_memory,
+      item_timeout_seconds,
       force_recurse,
       gc_roots_dir,
       socket,
@@ -489,6 +504,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
           show_input_drvs,
           workers,
           max_memory,
+          item_timeout_seconds,
           force_recurse,
           gc_roots_dir,
         })?,
@@ -526,6 +542,7 @@ struct EvalInput {
   show_input_drvs:           bool,
   workers:                   usize,
   max_memory:                usize,
+  item_timeout_seconds:      u64,
   force_recurse:             bool,
   gc_roots_dir:              Option<PathBuf>,
 }
@@ -545,6 +562,9 @@ fn config(args: EvalInput) -> Result<Config> {
   {
     bail!("remote evaluation requires --remote-token or EVIX_REMOTE_TOKEN");
   }
+  if args.item_timeout_seconds == 0 {
+    bail!("item timeout must be greater than zero");
+  }
 
   Ok(Config {
     input,
@@ -553,6 +573,7 @@ fn config(args: EvalInput) -> Result<Config> {
     gc_roots_dir: args.gc_roots_dir,
     workers: args.workers,
     max_memory_size: args.max_memory,
+    item_timeout_seconds: args.item_timeout_seconds,
     meta: args.meta,
     show_input_drvs: args.show_input_drvs,
     override_inputs: pairs(args.override_input),
@@ -821,6 +842,34 @@ mod tests {
 
     assert_eq!(config.remotes.len(), 1);
     assert_eq!(config.remotes[0].token, None);
+  }
+
+  #[test]
+  fn eval_accepts_item_timeout_seconds() {
+    let (_, CommandPlan::Eval { config, .. }) =
+      parse_plan_from(["eval", "--expr", "{}", "--item-timeout-seconds", "7"])
+        .expect("parse eval plan")
+    else {
+      panic!("expected eval command");
+    };
+
+    assert_eq!(config.item_timeout_seconds, 7);
+  }
+
+  #[test]
+  fn eval_rejects_zero_item_timeout_seconds() {
+    let error = match parse_plan_from([
+      "eval",
+      "--expr",
+      "{}",
+      "--item-timeout-seconds",
+      "0",
+    ]) {
+      Ok(_) => panic!("zero item timeout should fail"),
+      Err(error) => error.to_string(),
+    };
+
+    assert!(error.contains("item timeout"));
   }
 
   #[test]
