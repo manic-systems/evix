@@ -43,7 +43,7 @@ run_local() {
 }
 
 start_worker() {
-	"$evix" worker --listen "127.0.0.1:$port" >/dev/null 2>&1 &
+	"$evix" worker --listen "127.0.0.1:$port" --insecure-tokenless-remote >/dev/null 2>&1 &
 	wpid=$!
 	for _ in $(seq 1 100); do
 		(echo >"/dev/tcp/127.0.0.1/$port") 2>/dev/null && break
@@ -61,6 +61,7 @@ stop_worker() {
 run_remote() {
 	# out, breadth, depth
 	"$evix" eval --no-daemon --workers 0 \
+		--insecure-tokenless-remote \
 		--remote "127.0.0.1:$port" "$sys" 4 \
 		--file "$fixture" --argstr system "$sys" --arg breadth "$2" --arg depth "$3" \
 		>"$1"
@@ -69,6 +70,7 @@ run_remote() {
 run_mixed() {
 	# out, breadth, depth
 	"$evix" eval --no-daemon --workers 4 \
+		--insecure-tokenless-remote \
 		--remote "127.0.0.1:$port" "$sys" 4 \
 		--file "$fixture" --argstr system "$sys" --arg breadth "$2" --arg depth "$3" \
 		>"$1"
