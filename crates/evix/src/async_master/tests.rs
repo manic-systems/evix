@@ -160,6 +160,17 @@ fn config_allows_tokenless_remote() {
 }
 
 #[test]
+fn config_rejects_zero_item_timeout() {
+  let config = Config {
+    item_timeout_seconds: 0,
+    ..Config::default()
+  };
+
+  let error = validate_config(&config).unwrap_err().to_string();
+  assert!(error.contains("item timeout"));
+}
+
+#[test]
 fn worker_failure_becomes_non_fatal_attribute_error() {
   let worker = local_worker(0);
   let item = WorkItem {

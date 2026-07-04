@@ -111,6 +111,12 @@ impl WorkerProcess {
     let _ = (&mut self.stderr_task).await;
   }
 
+  pub(crate) async fn abort(&mut self) {
+    let _ = self.proc.start_kill();
+    let _ = self.proc.wait().await;
+    let _ = (&mut self.stderr_task).await;
+  }
+
   pub(crate) async fn wait_for_restart(&mut self) {
     let _ = self.proc.wait().await;
     let _ = (&mut self.stderr_task).await;

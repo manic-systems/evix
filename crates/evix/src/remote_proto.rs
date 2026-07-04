@@ -11,7 +11,7 @@ use crate::{
   Event,
   Input,
   worker_capnp,
-  worker_config::WorkerConfig,
+  worker_config::{DEFAULT_ITEM_TIMEOUT_SECONDS, WorkerConfig},
   worker_process::WorkerStatus,
 };
 
@@ -207,19 +207,20 @@ fn read_worker_config(
   reader: worker_capnp::worker_config::Reader<'_>,
 ) -> Result<WorkerConfig> {
   Ok(WorkerConfig {
-    input:           read_input(reader.get_input()?)?,
-    auto_args:       read_auto_args(reader.get_auto_args()?)?,
-    force_recurse:   reader.get_force_recurse(),
-    gc_roots_dir:    read_text_opt(reader.get_gc_roots_dir()?)?
+    input:                read_input(reader.get_input()?)?,
+    auto_args:            read_auto_args(reader.get_auto_args()?)?,
+    force_recurse:        reader.get_force_recurse(),
+    gc_roots_dir:         read_text_opt(reader.get_gc_roots_dir()?)?
       .map(PathBuf::from),
-    max_memory_size: reader
+    max_memory_size:      reader
       .get_max_memory_size()
       .try_into()
       .context("maxMemorySize exceeds this platform's usize")?,
-    meta:            reader.get_meta(),
-    show_input_drvs: reader.get_show_input_drvs(),
-    override_inputs: read_pairs(reader.get_override_inputs()?)?,
-    nix_options:     read_pairs(reader.get_nix_options()?)?,
+    item_timeout_seconds: DEFAULT_ITEM_TIMEOUT_SECONDS,
+    meta:                 reader.get_meta(),
+    show_input_drvs:      reader.get_show_input_drvs(),
+    override_inputs:      read_pairs(reader.get_override_inputs()?)?,
+    nix_options:          read_pairs(reader.get_nix_options()?)?,
   })
 }
 

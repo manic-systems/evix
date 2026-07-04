@@ -50,66 +50,72 @@ pub enum AutoArg {
 #[serde(rename_all = "camelCase")]
 pub struct Config {
   #[serde(with = "serde_config::input")]
-  pub input:           Input,
+  pub input:                Input,
   #[serde(with = "serde_config::auto_args")]
-  pub auto_args:       Vec<(String, AutoArg)>,
+  pub auto_args:            Vec<(String, AutoArg)>,
   /// Recurse into all attrsets, ignoring `recurseForDerivations`.
   ///
   /// This remains part of evix's compatibility surface even though the
   /// redesigned API keeps it out of the minimal example config.
   #[serde(default)]
-  pub force_recurse:   bool,
-  pub gc_roots_dir:    Option<PathBuf>,
-  pub workers:         usize,
-  pub max_memory_size: usize,
+  pub force_recurse:        bool,
+  pub gc_roots_dir:         Option<PathBuf>,
+  pub workers:              usize,
+  pub max_memory_size:      usize,
+  /// Per-attribute evaluation timeout in seconds. A worker that does not
+  /// return an event and status for one attribute before this deadline is
+  /// aborted, reconnected, and the attribute is emitted as a non-fatal error.
+  #[serde(default = "default_item_timeout_seconds")]
+  pub item_timeout_seconds: u64,
   /// Attach each derivation's `meta` attribute (description, license,
   /// homepage, maintainers, ...) to the emitted [`Derivation`]. Off by
   /// default because forcing `meta` deeply costs extra evaluation.
   #[serde(default)]
-  pub meta:            bool,
+  pub meta:                 bool,
   /// Read each derivation's input derivations from the store and attach them
   /// as [`Derivation::input_drvs`]. Off by default because it reads the
   /// `.drv` file for every job.
   #[serde(default)]
-  pub show_input_drvs: bool,
+  pub show_input_drvs:      bool,
   /// Flake input overrides applied while locking, as `(input_path, ref)`
   /// pairs (e.g., `("nixpkgs", "github:NixOS/nixpkgs/nixos-unstable")`). Only
   /// meaningful for [`Input::Flake`].
   #[serde(default)]
-  pub override_inputs: Vec<(String, String)>,
+  pub override_inputs:      Vec<(String, String)>,
   /// Nix settings applied to the evaluation context before the eval state is
   /// built, as `(key, value)` pairs (e.g.,
   /// `("allow-import-from-derivation", "false")`). Equivalent to `nix`'s
   /// `--option KEY VALUE`.
   #[serde(default)]
-  pub nix_options:     Vec<(String, String)>,
+  pub nix_options:          Vec<(String, String)>,
   /// Remote worker endpoints available to the master.
   #[serde(default)]
-  pub remotes:         Vec<Remote>,
+  pub remotes:              Vec<Remote>,
   /// Worker executable used for local worker subprocesses.
   ///
   /// This is intentionally library-only and is not serialized into daemon
   /// requests. When unset, local workers re-exec the current process and
   /// expect the host to call [`run_worker_if_requested`] during startup.
   #[serde(skip)]
-  pub worker_exe:      Option<PathBuf>,
+  pub worker_exe:           Option<PathBuf>,
 }
 
 impl Default for Config {
   fn default() -> Self {
     Self {
-      input:           Input::Expr("{}".into()),
-      auto_args:       Vec::new(),
-      force_recurse:   false,
-      gc_roots_dir:    None,
-      workers:         1,
-      max_memory_size: 4096,
-      meta:            false,
-      show_input_drvs: false,
-      override_inputs: Vec::new(),
-      nix_options:     Vec::new(),
-      remotes:         Vec::new(),
-      worker_exe:      None,
+      input:                Input::Expr("{}".into()),
+      auto_args:            Vec::new(),
+      force_recurse:        false,
+      gc_roots_dir:         None,
+      workers:              1,
+      max_memory_size:      4096,
+      item_timeout_seconds: default_item_timeout_seconds(),
+      meta:                 false,
+      show_input_drvs:      false,
+      override_inputs:      Vec::new(),
+      nix_options:          Vec::new(),
+      remotes:              Vec::new(),
+      worker_exe:           None,
     }
   }
 }
@@ -187,6 +193,11 @@ impl ConfigBuilder {
     self
   }
 
+  pub fn item_timeout_seconds(mut self, seconds: u64) -> Self {
+    self.config.item_timeout_seconds = seconds;
+    self
+  }
+
   pub fn meta(mut self, enabled: bool) -> Self {
     self.config.meta = enabled;
     self
@@ -257,6 +268,10 @@ impl ConfigBuilder {
   pub fn build(self) -> Config {
     self.config
   }
+}
+
+fn default_item_timeout_seconds() -> u64 {
+  worker_config::DEFAULT_ITEM_TIMEOUT_SECONDS
 }
 
 /// Remote worker pool configuration.
@@ -458,6 +473,7 @@ mod tests {
     let config = ConfigBuilder::flake(".#hydraJobs")
       .workers(4)
       .max_memory_size(1024)
+      .item_timeout_seconds(60)
       .meta(true)
       .show_input_drvs(true)
       .force_recurse(true)
@@ -477,6 +493,7 @@ mod tests {
 
     assert_eq!(config.workers, 4);
     assert_eq!(config.max_memory_size, 1024);
+    assert_eq!(config.item_timeout_seconds, 60);
     assert!(config.meta);
     assert!(config.show_input_drvs);
     assert!(config.force_recurse);

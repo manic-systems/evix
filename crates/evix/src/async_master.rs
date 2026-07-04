@@ -6,10 +6,11 @@ use std::{
     Arc,
     atomic::{AtomicBool, Ordering},
   },
+  time::Duration,
 };
 
-use anyhow::{Context as _, Result, bail};
-use tokio::{sync::mpsc, task::JoinHandle};
+use anyhow::{Context as _, Result, anyhow, bail};
+use tokio::{sync::mpsc, task::JoinHandle, time};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
@@ -153,6 +154,9 @@ where
 }
 
 fn validate_config(config: &Config) -> Result<()> {
+  if config.item_timeout_seconds == 0 {
+    bail!("item timeout must be greater than zero");
+  }
   for remote in &config.remotes {
     if remote.workers == 0 {
       bail!(
@@ -447,7 +451,7 @@ async fn worker_task(
     let attr = item.path.join(".");
     trace!(worker = %spec.label, attr = %attr, "sending work to worker");
 
-    let event = worker.work(&item.path, &config, &spec).await;
+    let event = work_with_timeout(&mut worker, &item, &config, &spec).await;
     let failed = event.is_err();
     if result_tx
       .send(WorkerResult {
@@ -474,6 +478,27 @@ async fn worker_task(
   worker.stop().await;
   info!(worker = %spec.label, "worker exiting");
   Ok(())
+}
+
+async fn work_with_timeout(
+  worker: &mut WorkerClient,
+  item: &WorkItem,
+  config: &WorkerConfig,
+  spec: &WorkerSpec,
+) -> Result<Event> {
+  let timeout = Duration::from_secs(config.item_timeout_seconds);
+  match time::timeout(timeout, worker.work(&item.path, config, spec)).await {
+    Ok(result) => result,
+    Err(_) => {
+      worker.abort().await;
+      let attr = display_attr(&item.path);
+      Err(anyhow!(
+        "worker {} timed out evaluating {attr} after {} seconds",
+        spec.label,
+        config.item_timeout_seconds
+      ))
+    },
+  }
 }
 
 async fn shutdown_workers(workers: Vec<WorkerSlot>) -> Result<()> {
@@ -580,6 +605,13 @@ impl WorkerClient {
   async fn stop(&mut self) {
     match self {
       Self::Local(worker) => worker.stop().await,
+      Self::Remote(worker) => worker.stop().await,
+    }
+  }
+
+  async fn abort(&mut self) {
+    match self {
+      Self::Local(worker) => worker.abort().await,
       Self::Remote(worker) => worker.stop().await,
     }
   }
