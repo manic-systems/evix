@@ -259,7 +259,6 @@ fn eval_flake<'s>(
     FlakeReference,
     FlakeReferenceParseFlags,
     LockFlags,
-    LockMode,
     LockedFlake,
   };
 
@@ -285,9 +284,10 @@ fn eval_flake<'s>(
   )
   .context("parsing flake reference")?;
 
+  let local_flake = is_local_flake_reference(flake_ref_str);
   let mut lock_flags = LockFlags::new(ctx, &flake_settings)
     .context("lock flags")?
-    .set_mode(LockMode::Virtual)
+    .set_mode(flake_lock_mode(local_flake))
     .context("setting lock mode")?;
   for (name, value) in override_inputs {
     let (override_ref, _fragment) = FlakeReference::parse(
@@ -312,7 +312,11 @@ fn eval_flake<'s>(
     &lock_flags,
     &flake_ref,
   )
-  .context("locking flake")?;
+  .context(if local_flake {
+    "locking local flake with an up-to-date flake.lock"
+  } else {
+    "locking flake"
+  })?;
   let outputs = locked
     .output_attrs(&flake_settings, state)
     .context("flake outputs")?;
@@ -334,6 +338,31 @@ fn eval_flake<'s>(
     current = next;
   }
   Ok(current)
+}
+
+#[cfg(feature = "flake")]
+fn flake_lock_mode(local_flake: bool) -> nix_bindings::flake::LockMode {
+  if local_flake {
+    nix_bindings::flake::LockMode::Check
+  } else {
+    nix_bindings::flake::LockMode::Virtual
+  }
+}
+
+#[cfg(feature = "flake")]
+fn is_local_flake_reference(reference: &str) -> bool {
+  let path = reference
+    .strip_prefix("path:")
+    .unwrap_or(reference)
+    .split_once('#')
+    .map_or(reference, |(path, _)| path);
+
+  path.is_empty()
+    || path == "."
+    || path == ".."
+    || path.starts_with("./")
+    || path.starts_with("../")
+    || Path::new(path).is_absolute()
 }
 
 #[cfg(not(feature = "flake"))]
@@ -459,6 +488,27 @@ mod tests {
       validate_nix_option_part("value", "!include /tmp/nix.conf").is_err()
     );
     assert!(validate_nix_option_part("value", "allowed-uris").is_ok());
+  }
+
+  #[cfg(feature = "flake")]
+  #[test]
+  fn local_flake_refs_require_checked_locks() {
+    use nix_bindings::flake::LockMode;
+
+    assert_eq!(flake_lock_mode(true), LockMode::Check);
+    assert!(is_local_flake_reference(".#hydraJobs"));
+    assert!(is_local_flake_reference("#hydraJobs"));
+    assert!(is_local_flake_reference("path:/tmp/evix-fixture#hydraJobs"));
+    assert!(is_local_flake_reference("../fixture#jobs"));
+  }
+
+  #[cfg(feature = "flake")]
+  #[test]
+  fn non_path_flake_refs_keep_virtual_locks() {
+    use nix_bindings::flake::LockMode;
+
+    assert_eq!(flake_lock_mode(false), LockMode::Virtual);
+    assert!(!is_local_flake_reference("github:NixOS/nixpkgs#hello"));
   }
 
   #[test]
