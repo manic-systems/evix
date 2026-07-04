@@ -1,7 +1,6 @@
 {
   evix,
   pkgs,
-  lib,
   ...
 }: let
   system = pkgs.stdenv.hostPlatform.system;
@@ -239,7 +238,7 @@ in
       def start_worker():
           worker.succeed("rm -f /tmp/evix-worker.log /tmp/evix-worker.pid")
           worker.succeed(
-              "evix worker --listen 0.0.0.0:7357 > /tmp/evix-worker.log 2>&1 & echo $! > /tmp/evix-worker.pid"
+              "evix worker --listen 0.0.0.0:7357 --token evix-test-token > /tmp/evix-worker.log 2>&1 & echo $! > /tmp/evix-worker.pid"
           )
           host.wait_until_succeeds("nc -z worker 7357")
 
@@ -331,7 +330,7 @@ in
 
       with subtest("remote worker evaluation"):
           host.succeed(
-              "evix eval --no-daemon --workers 0 --remote worker:7357 "
+              "evix eval --no-daemon --workers 0 --remote-token evix-test-token --remote worker:7357 "
               + q(SYSTEM)
               + " 1 --expr "
               + q(REMOTE_EXPR)
@@ -341,7 +340,7 @@ in
 
       with subtest("distributed eval over routed remote workers"):
           host.succeed(
-              "evix eval --no-daemon --workers 0 "
+              "evix eval --no-daemon --workers 0 --remote-token evix-test-token "
               + "--remote worker:7357 "
               + q(SYSTEM)
               + " 1 --remote worker:7357 "
