@@ -10,7 +10,7 @@ use std::{
 
 use anyhow::{Context as _, Result, bail};
 use tokio::{sync::mpsc, task::JoinHandle};
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::{
   Config,
@@ -360,9 +360,10 @@ where
     let worker_id = result.worker_id;
     idle.push_back(worker_id);
     let spec = &workers[worker_id].spec;
-    let event = result
-      .event
-      .with_context(|| format!("worker {} failed", spec.label))?;
+    let event = match result.event {
+      Ok(event) => event,
+      Err(err) => worker_failure_event(spec, &result.item, err),
+    };
     let completed = scheduler.complete(spec, result.item, &event);
 
     if completed.emit {
@@ -447,6 +448,7 @@ async fn worker_task(
     trace!(worker = %spec.label, attr = %attr, "sending work to worker");
 
     let event = worker.work(&item.path, &config, &spec).await;
+    let failed = event.is_err();
     if result_tx
       .send(WorkerResult {
         worker_id: spec.id,
@@ -457,6 +459,15 @@ async fn worker_task(
       .is_err()
     {
       break;
+    }
+
+    if failed && !cancel.load(Ordering::Relaxed) {
+      warn!(
+        worker = %spec.label,
+        attr = %attr,
+        "worker failed while evaluating attribute; reconnecting"
+      );
+      worker.reconnect(&config, &spec).await?;
     }
   }
 
@@ -499,6 +510,19 @@ fn display_attr(path: &[String]) -> String {
   } else {
     path.join(".")
   }
+}
+
+fn worker_failure_event(
+  spec: &WorkerSpec,
+  item: &WorkItem,
+  error: anyhow::Error,
+) -> Event {
+  Event::Error(EvalError {
+    attr:      display_attr(&item.path),
+    attr_path: item.path.clone(),
+    error:     format!("worker {} failed: {error}", spec.label),
+    fatal:     false,
+  })
 }
 
 impl WorkerClient {
@@ -558,6 +582,15 @@ impl WorkerClient {
       Self::Local(worker) => worker.stop().await,
       Self::Remote(worker) => worker.stop().await,
     }
+  }
+
+  async fn reconnect(
+    &mut self,
+    config: &WorkerConfig,
+    spec: &WorkerSpec,
+  ) -> Result<()> {
+    *self = Self::connect(config, spec).await?;
+    Ok(())
   }
 }
 
