@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use anyhow::anyhow;
+
 use super::*;
 use crate::Derivation;
 
@@ -155,6 +157,26 @@ fn config_allows_tokenless_remote() {
   };
 
   validate_config(&config).unwrap();
+}
+
+#[test]
+fn worker_failure_becomes_non_fatal_attribute_error() {
+  let worker = local_worker(0);
+  let item = WorkItem {
+    path:        vec!["jobs".into(), "bad".into()],
+    rejected_by: Vec::new(),
+  };
+
+  let event = worker_failure_event(&worker, &item, anyhow!("process died"));
+
+  let Event::Error(error) = event else {
+    panic!("expected worker failure to become an evaluation error");
+  };
+  assert_eq!(error.attr, "jobs.bad");
+  assert_eq!(error.attr_path, item.path);
+  assert!(error.error.contains("worker local#0 failed"));
+  assert!(error.error.contains("process died"));
+  assert!(!error.fatal);
 }
 
 fn scheduler_with_workers(worker_count: usize) -> Scheduler {

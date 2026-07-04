@@ -93,9 +93,13 @@ impl WorkerProcess {
   }
 
   pub(crate) async fn work(&mut self, path: &[String]) -> Result<WorkResponse> {
-    write_client(&mut self.stdin, &ClientMessage::Work(path.to_vec())).await?;
-
     let attr = path.join(".");
+    if let Err(err) =
+      write_client(&mut self.stdin, &ClientMessage::Work(path.to_vec())).await
+    {
+      return Err(self.exit_error("request", &attr, err).await);
+    }
+
     let event = self.read_event(path).await?;
     let status = self.read_status(&attr).await?;
     Ok(WorkResponse { event, status })
