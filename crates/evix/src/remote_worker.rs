@@ -28,8 +28,8 @@ const ALLOWED_REMOTE_NIX_OPTIONS: &[&str] = &[
   "restrict-eval",
 ];
 
-pub async fn serve(addr: &str, token: &str) -> Result<()> {
-  if token.is_empty() {
+pub async fn serve(addr: &str, token: Option<&str>) -> Result<()> {
+  if token == Some("") {
     bail!("remote worker token must not be empty");
   }
   let listener = TcpListener::bind(addr)
@@ -52,10 +52,10 @@ pub async fn serve(addr: &str, token: &str) -> Result<()> {
     if let Err(err) = stream.set_nodelay(true) {
       error!(peer = %peer, error = %err, "failed to set TCP_NODELAY");
     }
-    let token = token.to_owned();
+    let token = token.map(str::to_owned);
     tokio::spawn(async move {
       let _permit = permit;
-      if let Err(err) = serve_connection(stream, &token).await {
+      if let Err(err) = serve_connection(stream, token.as_deref()).await {
         error!(peer = %peer, error = %err, "remote worker connection failed");
       }
     });
@@ -154,7 +154,7 @@ impl RemoteWorker {
 
 async fn serve_connection(
   stream: TcpStream,
-  expected_token: &str,
+  expected_token: Option<&str>,
 ) -> Result<()> {
   let mut stream = stream.compat();
   let config = match read_client_timeout(&mut stream).await? {
@@ -230,7 +230,10 @@ fn validate_remote_config(config: &WorkerConfig) -> Result<()> {
   Ok(())
 }
 
-fn token_matches(actual: Option<&str>, expected: &str) -> bool {
+fn token_matches(actual: Option<&str>, expected: Option<&str>) -> bool {
+  let Some(expected) = expected else {
+    return actual.is_none();
+  };
   let Some(actual) = actual else {
     return false;
   };
@@ -295,9 +298,11 @@ mod tests {
 
   #[test]
   fn token_match_requires_exact_shared_secret() {
-    assert!(token_matches(Some("secret"), "secret"));
-    assert!(!token_matches(Some("secret"), "SECRET"));
-    assert!(!token_matches(Some("secret-extra"), "secret"));
-    assert!(!token_matches(None, "secret"));
+    assert!(token_matches(Some("secret"), Some("secret")));
+    assert!(token_matches(None, None));
+    assert!(!token_matches(Some("secret"), Some("SECRET")));
+    assert!(!token_matches(Some("secret-extra"), Some("secret")));
+    assert!(!token_matches(None, Some("secret")));
+    assert!(!token_matches(Some("secret"), None));
   }
 }

@@ -160,9 +160,6 @@ fn validate_config(config: &Config) -> Result<()> {
         remote.endpoint
       );
     }
-    if remote.token.as_deref().is_none_or(str::is_empty) {
-      bail!("remote worker {} requires a token", remote.endpoint);
-    }
   }
   Ok(())
 }
