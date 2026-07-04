@@ -24,155 +24,163 @@ enum Commands {
   #[pound(required_group = "input")]
   Eval {
     #[pound(long, group = "input")]
-    flake:           Option<String>,
+    flake:                     Option<String>,
     #[pound(long, group = "input")]
-    expr:            Option<String>,
+    expr:                      Option<String>,
     #[pound(long, group = "input")]
-    file:            Option<PathBuf>,
+    file:                      Option<PathBuf>,
     #[pound(long)]
-    arg:             Vec<Pair>,
+    arg:                       Vec<Pair>,
     #[pound(long)]
-    argstr:          Vec<Pair>,
+    argstr:                    Vec<Pair>,
     #[pound(long)]
-    override_input:  Vec<Pair>,
+    override_input:            Vec<Pair>,
     #[pound(long)]
-    option:          Vec<Pair>,
+    option:                    Vec<Pair>,
     #[pound(long)]
-    remote:          Vec<RemoteArg>,
+    remote:                    Vec<RemoteArg>,
     #[pound(long)]
-    remote_token:    Option<String>,
+    remote_token:              Option<String>,
+    #[pound(long, hidden)]
+    insecure_tokenless_remote: bool,
     #[pound(long)]
-    meta:            bool,
+    meta:                      bool,
     #[pound(long)]
-    show_input_drvs: bool,
+    show_input_drvs:           bool,
     #[pound(long, default = "1")]
-    workers:         usize,
+    workers:                   usize,
     #[pound(long, alias = "max-memory-size", default = "4096")]
-    max_memory:      usize,
+    max_memory:                usize,
     #[pound(long)]
-    force_recurse:   bool,
+    force_recurse:             bool,
     #[pound(long)]
-    gc_roots_dir:    Option<PathBuf>,
+    gc_roots_dir:              Option<PathBuf>,
     #[pound(long)]
-    socket:          Option<PathBuf>,
+    socket:                    Option<PathBuf>,
     #[pound(long)]
-    no_daemon:       bool,
+    no_daemon:                 bool,
   },
 
   #[pound(required_group = "input")]
   Watch {
     #[pound(long, group = "input")]
-    flake:           Option<String>,
+    flake:                     Option<String>,
     #[pound(long, group = "input")]
-    expr:            Option<String>,
+    expr:                      Option<String>,
     #[pound(long, group = "input")]
-    file:            Option<PathBuf>,
+    file:                      Option<PathBuf>,
     #[pound(long)]
-    arg:             Vec<Pair>,
+    arg:                       Vec<Pair>,
     #[pound(long)]
-    argstr:          Vec<Pair>,
+    argstr:                    Vec<Pair>,
     #[pound(long)]
-    override_input:  Vec<Pair>,
+    override_input:            Vec<Pair>,
     #[pound(long)]
-    option:          Vec<Pair>,
+    option:                    Vec<Pair>,
     #[pound(long)]
-    remote:          Vec<RemoteArg>,
+    remote:                    Vec<RemoteArg>,
     #[pound(long)]
-    remote_token:    Option<String>,
+    remote_token:              Option<String>,
+    #[pound(long, hidden)]
+    insecure_tokenless_remote: bool,
     #[pound(long)]
-    meta:            bool,
+    meta:                      bool,
     #[pound(long)]
-    show_input_drvs: bool,
+    show_input_drvs:           bool,
     #[pound(long, default = "1")]
-    workers:         usize,
+    workers:                   usize,
     #[pound(long, alias = "max-memory-size", default = "4096")]
-    max_memory:      usize,
+    max_memory:                usize,
     #[pound(long)]
-    force_recurse:   bool,
+    force_recurse:             bool,
     #[pound(long)]
-    gc_roots_dir:    Option<PathBuf>,
+    gc_roots_dir:              Option<PathBuf>,
     #[pound(long)]
-    socket:          Option<PathBuf>,
+    socket:                    Option<PathBuf>,
     #[pound(long)]
-    no_daemon:       bool,
+    no_daemon:                 bool,
   },
 
   #[pound(required_group = "input")]
   Query {
     #[pound(long, group = "input")]
-    flake:           Option<String>,
+    flake:                     Option<String>,
     #[pound(long, group = "input")]
-    expr:            Option<String>,
+    expr:                      Option<String>,
     #[pound(long, group = "input")]
-    file:            Option<PathBuf>,
+    file:                      Option<PathBuf>,
     #[pound(long)]
-    arg:             Vec<Pair>,
+    arg:                       Vec<Pair>,
     #[pound(long)]
-    argstr:          Vec<Pair>,
+    argstr:                    Vec<Pair>,
     #[pound(long)]
-    override_input:  Vec<Pair>,
+    override_input:            Vec<Pair>,
     #[pound(long)]
-    option:          Vec<Pair>,
+    option:                    Vec<Pair>,
     #[pound(long)]
-    remote:          Vec<RemoteArg>,
+    remote:                    Vec<RemoteArg>,
     #[pound(long)]
-    remote_token:    Option<String>,
-    #[pound(long)]
-    meta:            bool,
-    #[pound(long)]
-    show_input_drvs: bool,
-    #[pound(long, default = "1")]
-    workers:         usize,
-    #[pound(long, alias = "max-memory-size", default = "4096")]
-    max_memory:      usize,
-    #[pound(long)]
-    force_recurse:   bool,
-    #[pound(long)]
-    gc_roots_dir:    Option<PathBuf>,
-    #[pound(long)]
-    socket:          Option<PathBuf>,
-    #[pound(long)]
-    system:          Vec<String>,
-    #[pound(long)]
-    attr_prefix:     Vec<String>,
+    remote_token:              Option<String>,
     #[pound(long, hidden)]
-    no_daemon:       bool,
+    insecure_tokenless_remote: bool,
+    #[pound(long)]
+    meta:                      bool,
+    #[pound(long)]
+    show_input_drvs:           bool,
+    #[pound(long, default = "1")]
+    workers:                   usize,
+    #[pound(long, alias = "max-memory-size", default = "4096")]
+    max_memory:                usize,
+    #[pound(long)]
+    force_recurse:             bool,
+    #[pound(long)]
+    gc_roots_dir:              Option<PathBuf>,
+    #[pound(long)]
+    socket:                    Option<PathBuf>,
+    #[pound(long)]
+    system:                    Vec<String>,
+    #[pound(long)]
+    attr_prefix:               Vec<String>,
+    #[pound(long, hidden)]
+    no_daemon:                 bool,
   },
 
   #[pound(required_group = "input")]
   Diff {
     #[pound(long, group = "input")]
-    flake:           Option<String>,
+    flake:                     Option<String>,
     #[pound(long, group = "input")]
-    expr:            Option<String>,
+    expr:                      Option<String>,
     #[pound(long, group = "input")]
-    file:            Option<PathBuf>,
+    file:                      Option<PathBuf>,
     #[pound(long)]
-    arg:             Vec<Pair>,
+    arg:                       Vec<Pair>,
     #[pound(long)]
-    argstr:          Vec<Pair>,
+    argstr:                    Vec<Pair>,
     #[pound(long)]
-    override_input:  Vec<Pair>,
+    override_input:            Vec<Pair>,
     #[pound(long)]
-    option:          Vec<Pair>,
+    option:                    Vec<Pair>,
     #[pound(long)]
-    remote:          Vec<RemoteArg>,
+    remote:                    Vec<RemoteArg>,
     #[pound(long)]
-    remote_token:    Option<String>,
+    remote_token:              Option<String>,
+    #[pound(long, hidden)]
+    insecure_tokenless_remote: bool,
     #[pound(long)]
-    meta:            bool,
+    meta:                      bool,
     #[pound(long)]
-    show_input_drvs: bool,
+    show_input_drvs:           bool,
     #[pound(long, default = "1")]
-    workers:         usize,
+    workers:                   usize,
     #[pound(long, alias = "max-memory-size", default = "4096")]
-    max_memory:      usize,
+    max_memory:                usize,
     #[pound(long)]
-    force_recurse:   bool,
+    force_recurse:             bool,
     #[pound(long)]
-    gc_roots_dir:    Option<PathBuf>,
+    gc_roots_dir:              Option<PathBuf>,
     #[pound(long)]
-    socket:          Option<PathBuf>,
+    socket:                    Option<PathBuf>,
   },
 
   Daemon {
@@ -184,9 +192,11 @@ enum Commands {
 
   Worker {
     #[pound(long)]
-    listen: String,
+    listen:                    String,
     #[pound(long)]
-    token:  Option<String>,
+    token:                     Option<String>,
+    #[pound(long, hidden)]
+    insecure_tokenless_remote: bool,
   },
 }
 
@@ -271,7 +281,7 @@ pub enum CommandPlan {
   },
   Worker {
     listen: String,
-    token:  String,
+    token:  Option<String>,
   },
 }
 
@@ -318,6 +328,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
       option,
       remote,
       remote_token,
+      insecure_tokenless_remote,
       meta,
       show_input_drvs,
       workers,
@@ -338,6 +349,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
           option,
           remote,
           remote_token,
+          insecure_tokenless_remote,
           meta,
           show_input_drvs,
           workers,
@@ -359,6 +371,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
       option,
       remote,
       remote_token,
+      insecure_tokenless_remote,
       meta,
       show_input_drvs,
       workers,
@@ -378,6 +391,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
         option,
         remote,
         remote_token,
+        insecure_tokenless_remote,
         meta,
         show_input_drvs,
         workers,
@@ -404,6 +418,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
       option,
       remote,
       remote_token,
+      insecure_tokenless_remote,
       meta,
       show_input_drvs,
       workers,
@@ -427,6 +442,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
           option,
           remote,
           remote_token,
+          insecure_tokenless_remote,
           meta,
           show_input_drvs,
           workers,
@@ -448,6 +464,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
       option,
       remote,
       remote_token,
+      insecure_tokenless_remote,
       meta,
       show_input_drvs,
       workers,
@@ -467,6 +484,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
           option,
           remote,
           remote_token,
+          insecure_tokenless_remote,
           meta,
           show_input_drvs,
           workers,
@@ -480,31 +498,36 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
     Commands::Daemon { socket, foreground } => {
       Ok(CommandPlan::Daemon { socket, foreground })
     },
-    Commands::Worker { listen, token } => {
+    Commands::Worker {
+      listen,
+      token,
+      insecure_tokenless_remote,
+    } => {
       Ok(CommandPlan::Worker {
         listen,
-        token: required_remote_token(token)?,
+        token: remote_worker_token(token, insecure_tokenless_remote)?,
       })
     },
   }
 }
 
 struct EvalInput {
-  flake:           Option<String>,
-  expr:            Option<String>,
-  file:            Option<PathBuf>,
-  arg:             Vec<Pair>,
-  argstr:          Vec<Pair>,
-  override_input:  Vec<Pair>,
-  option:          Vec<Pair>,
-  remote:          Vec<RemoteArg>,
-  remote_token:    Option<String>,
-  meta:            bool,
-  show_input_drvs: bool,
-  workers:         usize,
-  max_memory:      usize,
-  force_recurse:   bool,
-  gc_roots_dir:    Option<PathBuf>,
+  flake:                     Option<String>,
+  expr:                      Option<String>,
+  file:                      Option<PathBuf>,
+  arg:                       Vec<Pair>,
+  argstr:                    Vec<Pair>,
+  override_input:            Vec<Pair>,
+  option:                    Vec<Pair>,
+  remote:                    Vec<RemoteArg>,
+  remote_token:              Option<String>,
+  insecure_tokenless_remote: bool,
+  meta:                      bool,
+  show_input_drvs:           bool,
+  workers:                   usize,
+  max_memory:                usize,
+  force_recurse:             bool,
+  gc_roots_dir:              Option<PathBuf>,
 }
 
 fn config(args: EvalInput) -> Result<Config> {
@@ -516,7 +539,10 @@ fn config(args: EvalInput) -> Result<Config> {
   };
 
   let remote_token = remote_token(args.remote_token)?;
-  if !args.remote.is_empty() && remote_token.is_none() {
+  if !args.remote.is_empty()
+    && remote_token.is_none()
+    && !args.insecure_tokenless_remote
+  {
     bail!("remote evaluation requires --remote-token or EVIX_REMOTE_TOKEN");
   }
 
@@ -555,9 +581,13 @@ fn remote_token(flag: Option<String>) -> Result<Option<String>> {
   }
 }
 
-fn required_remote_token(flag: Option<String>) -> Result<String> {
+fn remote_worker_token(
+  flag: Option<String>,
+  allow_tokenless: bool,
+) -> Result<Option<String>> {
   match remote_token(flag)? {
-    Some(token) => Ok(token),
+    Some(token) => Ok(Some(token)),
+    None if allow_tokenless => Ok(None),
     None => bail!("remote worker requires --token or EVIX_REMOTE_TOKEN"),
   }
 }
@@ -772,6 +802,28 @@ mod tests {
   }
 
   #[test]
+  fn eval_accepts_explicit_tokenless_remote() {
+    let _lock = ENV_LOCK.lock().expect("env lock poisoned");
+    let _env = EnvGuard::clear_remote_token();
+    let (_, CommandPlan::Eval { config, .. }) = parse_plan_from([
+      "eval",
+      "--expr",
+      "{}",
+      "--insecure-tokenless-remote",
+      "--remote",
+      "worker:7357",
+      "x86_64-linux",
+      "1",
+    ])
+    .expect("parse eval plan") else {
+      panic!("expected eval command");
+    };
+
+    assert_eq!(config.remotes.len(), 1);
+    assert_eq!(config.remotes[0].token, None);
+  }
+
+  #[test]
   fn grouped_values_may_start_with_dashes() {
     let (_, CommandPlan::Eval { config, .. }) = parse_plan_from([
       "eval",
@@ -859,7 +911,7 @@ mod tests {
     assert_eq!(verbosity.verbose, 1);
     assert_eq!(verbosity.quiet, 0);
     assert_eq!(listen, "0.0.0.0:7357");
-    assert_eq!(token, "secret");
+    assert_eq!(token.as_deref(), Some("secret"));
   }
 
   #[test]
@@ -872,5 +924,23 @@ mod tests {
     };
 
     assert!(error.contains("remote worker requires --token"));
+  }
+
+  #[test]
+  fn worker_accepts_explicit_tokenless_remote() {
+    let _lock = ENV_LOCK.lock().expect("env lock poisoned");
+    let _env = EnvGuard::clear_remote_token();
+    let (_, CommandPlan::Worker { listen, token }) = parse_plan_from([
+      "worker",
+      "--listen",
+      "127.0.0.1:7357",
+      "--insecure-tokenless-remote",
+    ])
+    .expect("parse worker plan") else {
+      panic!("expected worker command");
+    };
+
+    assert_eq!(listen, "127.0.0.1:7357");
+    assert_eq!(token, None);
   }
 }

@@ -415,7 +415,16 @@ pub fn run_worker_if_requested() -> Result<bool> {
 
 /// Serve remote evaluation workers over Cap'n Proto stream framing.
 pub async fn serve_remote_worker(addr: &str, token: &str) -> Result<()> {
-  remote_worker::serve(addr, token).await.map_err(Error::from)
+  remote_worker::serve(addr, Some(token))
+    .await
+    .map_err(Error::from)
+}
+
+/// Serve remote evaluation workers without authentication.
+///
+/// This is intended for trusted local benchmark harnesses and tests only.
+pub async fn serve_tokenless_remote_worker(addr: &str) -> Result<()> {
+  remote_worker::serve(addr, None).await.map_err(Error::from)
 }
 
 #[cfg(test)]

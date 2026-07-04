@@ -100,7 +100,10 @@ fn run_plan(plan: CommandPlan) -> Result<()> {
     },
     CommandPlan::Worker { listen, token } => {
       with_runtime(async {
-        evix::serve_remote_worker(&listen, &token).await?;
+        match token {
+          Some(token) => evix::serve_remote_worker(&listen, &token).await?,
+          None => evix::serve_tokenless_remote_worker(&listen).await?,
+        }
         Ok(())
       })
     },

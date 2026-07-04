@@ -143,7 +143,7 @@ fn config_rejects_zero_remote_workers() {
 }
 
 #[test]
-fn config_rejects_remote_without_token() {
+fn config_allows_tokenless_remote() {
   let config = Config {
     remotes: vec![Remote {
       endpoint: "worker:7357".into(),
@@ -154,8 +154,7 @@ fn config_rejects_remote_without_token() {
     ..Config::default()
   };
 
-  let error = validate_config(&config).unwrap_err().to_string();
-  assert!(error.contains("requires a token"));
+  validate_config(&config).unwrap();
 }
 
 fn scheduler_with_workers(worker_count: usize) -> Scheduler {
