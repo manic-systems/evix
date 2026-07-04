@@ -149,7 +149,11 @@ where
     on_event,
   )
   .await;
-  shutdown_workers(workers).await?;
+  if matches!(result, Ok(RunOutcome::Cancelled)) {
+    abort_workers(workers).await?;
+  } else {
+    shutdown_workers(workers).await?;
+  }
   result
 }
 
@@ -507,6 +511,18 @@ async fn shutdown_workers(workers: Vec<WorkerSlot>) -> Result<()> {
   }
   for worker in workers {
     worker.handle.await.context("worker task panicked")??;
+  }
+  Ok(())
+}
+
+async fn abort_workers(workers: Vec<WorkerSlot>) -> Result<()> {
+  for worker in workers {
+    worker.handle.abort();
+    match worker.handle.await {
+      Ok(result) => result?,
+      Err(err) if err.is_cancelled() => {},
+      Err(err) => return Err(err).context("worker task panicked"),
+    }
   }
   Ok(())
 }

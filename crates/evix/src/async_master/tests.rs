@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::{
+  collections::{BTreeMap, BTreeSet, HashMap},
+  future,
+};
 
 use anyhow::anyhow;
 
@@ -188,6 +191,27 @@ fn worker_failure_becomes_non_fatal_attribute_error() {
   assert!(error.error.contains("worker local#0 failed"));
   assert!(error.error.contains("process died"));
   assert!(!error.fatal);
+}
+
+#[test]
+fn abort_workers_cancels_in_flight_worker_tasks() {
+  tokio::runtime::Builder::new_current_thread()
+    .enable_time()
+    .build()
+    .unwrap()
+    .block_on(async {
+      let (work_tx, _work_rx) = tokio::sync::mpsc::channel(1);
+      let handle =
+        tokio::spawn(async { future::pending::<anyhow::Result<()>>().await });
+
+      abort_workers(vec![WorkerSlot {
+        spec: local_worker(0),
+        work_tx,
+        handle,
+      }])
+      .await
+      .unwrap();
+    });
 }
 
 fn scheduler_with_workers(worker_count: usize) -> Scheduler {
