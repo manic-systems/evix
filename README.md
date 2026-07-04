@@ -133,17 +133,19 @@ By default, the daemon listens on `/run/user/$UID/evix.sock`. Override that with
 Start a remote evaluation worker service:
 
 ```bash
-# Bind a worker to 0.0.0.0:7357. This can also be, e.g, your VPN
-$ evix worker --listen 0.0.0.0:7357
+# Bind to loopback by default. Expose this only over a trusted tunnel/VPN.
+$ evix worker --listen 127.0.0.1:7357 --token "$EVIX_REMOTE_TOKEN"
 ```
 
 Masters connect to worker services with `--remote ENDPOINT SYSTEMS WORKERS`.
 `SYSTEMS` is a comma-separated list of derivation systems that endpoint should
 emit; use an empty list to accept every system. `WORKERS` opens that many
-parallel worker connections to the endpoint:
+parallel worker connections to the endpoint. `--remote-token` must match the
+worker's `--token`; both flags can also read `EVIX_REMOTE_TOKEN`:
 
 ```bash
 $ evix eval --no-daemon --workers 0 \
+  --remote-token "$EVIX_REMOTE_TOKEN" \
   --remote builder-a:7357 x86_64-linux 4 \
   --remote builder-b:7357 aarch64-linux 2 \
   --flake .#hydraJobs
@@ -195,6 +197,7 @@ Like `query`, `diff` requires an existing warm daemon session.
 | `--override-input NAME REF`   | Override a flake input while locking                        |
 | `--option KEY VALUE`          | Set a Nix option before evaluation                          |
 | `--remote ENDPOINT SYSTEMS N` | Add `N` remote worker connections for matching systems      |
+| `--remote-token TOKEN`        | Shared token for remote worker authentication               |
 | `--meta`                      | Include each derivation's `meta` attribute                  |
 | `--show-input-drvs`           | Include input derivations from each `.drv` file             |
 | `--workers N`                 | Local worker process count, default `1`                     |
@@ -225,13 +228,15 @@ work queue and feed their results back to the same scheduler.
   derivation or error event is terminal for that path. Evaluation is done when
   the queue is empty and no worker is busy.
 
-- **Remote workers.** `evix worker --listen` runs a TCP service. For each
-  connection it spawns its own evaluator subprocess, so a remote connection
-  behaves exactly like a local worker (same memory limit, same restart-on-limit
-  behavior) but it lives on another machine. The master opens `N` connections
-  per `--remote ENDPOINT SYSTEMS N`, each becoming an independent worker in the
-  pool. With `--workers 0` and at least one `--remote`, the master runs no local
-  workers and evaluates entirely on remotes.
+- **Remote workers.** `evix worker --listen` runs a token-authenticated TCP
+  service. Expose it only on loopback, WireGuard, an SSH tunnel, or another
+  trusted network. For each authenticated connection it spawns its own evaluator
+  subprocess, so a remote connection behaves exactly like a local worker (same
+  memory limit, same restart-on-limit behavior) but it lives on another machine.
+  The master opens `N` connections per `--remote ENDPOINT SYSTEMS N`, each
+  becoming an independent worker in the pool. With `--workers 0` and at least
+  one `--remote`, the master runs no local workers and evaluates entirely on
+  remotes.
 
 - **System routing.** Each remote declares the systems it owns (an empty list
   means "any"). When a remote returns a derivation for a system it does not own,
