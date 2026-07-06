@@ -11,6 +11,7 @@ struct ClientMessage {
 struct Setup {
   config @0 :WorkerConfig;
   token @1 :TextOpt;
+  expectedStoreDir @2 :TextOpt;
 }
 
 struct Work {
