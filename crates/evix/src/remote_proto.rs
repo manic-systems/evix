@@ -18,8 +18,9 @@ use crate::{
 #[derive(Debug)]
 pub(crate) enum ClientMessage {
   Setup {
-    config: WorkerConfig,
-    token:  Option<String>,
+    config:             WorkerConfig,
+    token:              Option<String>,
+    expected_store_dir: Option<String>,
   },
   Work(Vec<String>),
   Shutdown,
@@ -44,10 +45,18 @@ where
   {
     let mut root = builder.init_root::<worker_capnp::client_message::Builder>();
     match message {
-      ClientMessage::Setup { config, token } => {
+      ClientMessage::Setup {
+        config,
+        token,
+        expected_store_dir,
+      } => {
         let mut setup = root.reborrow().init_setup();
         set_worker_config(setup.reborrow().init_config(), config)?;
         set_text_opt(setup.reborrow().init_token(), token.as_deref());
+        set_text_opt(
+          setup.reborrow().init_expected_store_dir(),
+          expected_store_dir.as_deref(),
+        );
       },
       ClientMessage::Work(path) => {
         set_text_list(
@@ -78,8 +87,9 @@ where
     worker_capnp::client_message::Which::Setup(setup) => {
       let setup = setup?;
       Ok(ClientMessage::Setup {
-        config: read_worker_config(setup.get_config()?)?,
-        token:  read_text_opt(setup.get_token()?)?,
+        config:             read_worker_config(setup.get_config()?)?,
+        token:              read_text_opt(setup.get_token()?)?,
+        expected_store_dir: read_text_opt(setup.get_expected_store_dir()?)?,
       })
     },
     worker_capnp::client_message::Which::Work(work) => {

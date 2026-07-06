@@ -246,7 +246,10 @@ work queue and feed their results back to the same scheduler.
   rejecting worker stays alive for compatible work. If every worker has rejected
   a path, evaluation fails fatally with
   `no worker accepted derivation at <attr> for system <system>` rather than
-  silently losing the derivation.
+  silently losing the derivation. Remote workers must use the same Nix store
+  directory as the master; the setup handshake rejects a remote whose `storeDir`
+  differs so emitted derivation and output paths remain meaningful to the
+  consumer.
 
 **Wire protocol.** Cap'n Proto messages over TCP with `TCP_NODELAY` set, because
 the exchange is one small request/response per attribute and Nagle would add a

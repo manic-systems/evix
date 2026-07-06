@@ -3,6 +3,7 @@ use std::{mem, sync::Arc, time::Duration};
 
 use anyhow::{Context as _, Result, bail};
 use futures_util::AsyncRead;
+use nix_bindings::{Context as NixContext, Store};
 use tokio::{
   net::{TcpListener, TcpStream},
   sync::Semaphore,
@@ -79,6 +80,7 @@ impl RemoteWorker {
     label: impl Into<String>,
   ) -> Result<Self> {
     let label = label.into();
+    let expected_store_dir = local_store_dir()?;
     debug!(worker = %label, endpoint = %endpoint, "connecting remote worker");
     let tcp = TcpStream::connect(endpoint).await.with_context(|| {
       format!("connecting remote worker {label} at {endpoint}")
@@ -94,8 +96,9 @@ impl RemoteWorker {
     let mut stream = tcp.compat();
 
     remote_proto::write_client(&mut stream, &ClientMessage::Setup {
-      config: config.clone(),
-      token:  token.map(str::to_owned),
+      config:             config.clone(),
+      token:              token.map(str::to_owned),
+      expected_store_dir: Some(expected_store_dir),
     })
     .await
     .with_context(|| format!("sending setup to remote worker {label}"))?;
@@ -165,7 +168,11 @@ async fn serve_connection(
 ) -> Result<()> {
   let mut stream = stream.compat();
   let config = match read_client_timeout(&mut stream).await? {
-    ClientMessage::Setup { config, token } => {
+    ClientMessage::Setup {
+      config,
+      token,
+      expected_store_dir,
+    } => {
       if !token_matches(token.as_deref(), expected_token) {
         remote_proto::write_server(
           &mut stream,
@@ -174,6 +181,7 @@ async fn serve_connection(
         .await?;
         bail!("remote worker authentication failed");
       }
+      validate_store_dir(expected_store_dir.as_deref())?;
       validate_remote_config(&config)?;
       config
     },
@@ -235,6 +243,26 @@ fn validate_remote_config(config: &WorkerConfig) -> Result<()> {
     }
   }
   Ok(())
+}
+
+fn validate_store_dir(expected: Option<&str>) -> Result<()> {
+  let Some(expected) = expected else {
+    return Ok(());
+  };
+  let actual = local_store_dir()?;
+  if actual != expected {
+    bail!(
+      "remote worker store dir mismatch: master uses {expected}, remote uses \
+       {actual}"
+    );
+  }
+  Ok(())
+}
+
+fn local_store_dir() -> Result<String> {
+  let ctx = Arc::new(NixContext::new().context("Nix context")?);
+  let store = Store::open(&ctx, None).context("Nix store")?;
+  store.store_dir().context("Nix store dir")
 }
 
 fn token_matches(actual: Option<&str>, expected: Option<&str>) -> bool {
@@ -327,6 +355,20 @@ mod tests {
     let config = WorkerConfig::from(&config);
 
     validate_remote_config(&config).unwrap();
+  }
+
+  #[test]
+  fn store_dir_validation_accepts_absent_expectation() {
+    validate_store_dir(None).unwrap();
+  }
+
+  #[test]
+  fn store_dir_validation_rejects_mismatch() {
+    let error = validate_store_dir(Some("/not-the-local-store"))
+      .unwrap_err()
+      .to_string();
+
+    assert!(error.contains("store dir mismatch"));
   }
 
   #[test]

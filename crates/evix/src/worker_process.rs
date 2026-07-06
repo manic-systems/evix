@@ -69,8 +69,9 @@ impl WorkerProcess {
 
     let mut stdin = child.stdin.take().context("worker stdin")?.compat_write();
     write_client(&mut stdin, &ClientMessage::Setup {
-      config: config.clone(),
-      token:  None,
+      config:             config.clone(),
+      token:              None,
+      expected_store_dir: None,
     })
     .await?;
 
