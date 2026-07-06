@@ -1,8 +1,8 @@
-use std::{env, path::Path, process::Stdio};
+use std::{collections::VecDeque, env, path::Path, process::Stdio};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use tokio::{
-  io::{AsyncReadExt as _, BufReader},
+  io::{AsyncRead, AsyncReadExt as _, BufReader},
   process::{Child, ChildStdin, ChildStdout, Command},
   task::JoinHandle,
 };
@@ -19,6 +19,10 @@ use crate::{
   remote_proto::{ClientMessage, ServerMessage, read_server, write_client},
   worker_config::WorkerConfig,
 };
+
+const STDERR_TAIL_LIMIT: usize = 64 * 1024;
+const STDERR_READ_CHUNK: usize = 8 * 1024;
+const STDERR_LINE_LIMIT: usize = 16 * 1024;
 
 pub(crate) struct WorkerProcess {
   pub(crate) label: String,
@@ -73,12 +77,9 @@ impl WorkerProcess {
     let stdout =
       BufReader::new(child.stdout.take().context("worker stdout")?).compat();
     let stderr = child.stderr.take().context("worker stderr")?;
-    let stderr_task = tokio::spawn(async move {
-      let mut stderr = BufReader::new(stderr);
-      let mut buf = String::new();
-      stderr.read_to_string(&mut buf).await?;
-      Ok(buf)
-    });
+    let stderr_label = label.clone();
+    let stderr_task =
+      tokio::spawn(async move { capture_stderr(stderr_label, stderr).await });
 
     let mut worker = Self {
       label,
@@ -194,6 +195,64 @@ impl WorkerProcess {
   }
 }
 
+async fn capture_stderr<R>(label: String, mut stderr: R) -> Result<String>
+where
+  R: AsyncRead + Unpin,
+{
+  let mut tail = VecDeque::with_capacity(STDERR_TAIL_LIMIT);
+  let mut line = Vec::new();
+  let mut truncated_line = false;
+  let mut buf = [0; STDERR_READ_CHUNK];
+
+  loop {
+    let n = stderr.read(&mut buf).await?;
+    if n == 0 {
+      break;
+    }
+
+    push_tail(&mut tail, &buf[..n]);
+    for byte in &buf[..n] {
+      if *byte == b'\n' {
+        trace_stderr_line(&label, &line, truncated_line);
+        line.clear();
+        truncated_line = false;
+      } else if line.len() < STDERR_LINE_LIMIT {
+        line.push(*byte);
+      } else {
+        truncated_line = true;
+      }
+    }
+  }
+
+  if !line.is_empty() || truncated_line {
+    trace_stderr_line(&label, &line, truncated_line);
+  }
+
+  Ok(tail_to_string(tail))
+}
+
+fn push_tail(tail: &mut VecDeque<u8>, bytes: &[u8]) {
+  for byte in bytes {
+    if tail.len() == STDERR_TAIL_LIMIT {
+      tail.pop_front();
+    }
+    tail.push_back(*byte);
+  }
+}
+
+fn tail_to_string(mut tail: VecDeque<u8>) -> String {
+  String::from_utf8_lossy(tail.make_contiguous()).into_owned()
+}
+
+fn trace_stderr_line(label: &str, line: &[u8], truncated: bool) {
+  let line = String::from_utf8_lossy(line);
+  if truncated {
+    debug!(worker = %label, stderr = %line, "worker stderr line truncated");
+  } else {
+    debug!(worker = %label, stderr = %line, "worker stderr");
+  }
+}
+
 fn append_startup_hint(message: &mut String, phase: &str) {
   if phase != "handshake" {
     return;
@@ -208,7 +267,9 @@ fn append_startup_hint(message: &mut String, phase: &str) {
 
 #[cfg(test)]
 mod tests {
-  use super::append_startup_hint;
+  use tokio::io::AsyncWriteExt as _;
+
+  use super::{STDERR_TAIL_LIMIT, append_startup_hint, capture_stderr};
 
   #[test]
   fn startup_hint_mentions_worker_dispatch() {
@@ -227,5 +288,27 @@ mod tests {
     append_startup_hint(&mut message, "event");
 
     assert!(!message.contains("run_worker_if_requested"));
+  }
+
+  #[test]
+  fn captured_stderr_keeps_only_bounded_tail() {
+    tokio::runtime::Builder::new_current_thread()
+      .build()
+      .unwrap()
+      .block_on(async {
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        let capture = tokio::spawn(capture_stderr("test".into(), reader));
+
+        writer.write_all(&vec![b'a'; 10]).await.unwrap();
+        writer
+          .write_all(&vec![b'b'; STDERR_TAIL_LIMIT])
+          .await
+          .unwrap();
+        drop(writer);
+
+        let captured = capture.await.unwrap().unwrap();
+        assert_eq!(captured.len(), STDERR_TAIL_LIMIT);
+        assert!(captured.bytes().all(|byte| byte == b'b'));
+      });
   }
 }
