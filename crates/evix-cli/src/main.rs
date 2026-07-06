@@ -180,6 +180,9 @@ fn is_relative_flake_path(path: &str) -> bool {
     || path == "."
     || path.starts_with("./")
     || path.starts_with("../")
+    || (path.contains('/')
+      && !path.contains(':')
+      && !Path::new(path).is_absolute())
 }
 
 fn canonical_flake_path(path: &str) -> Result<String> {
@@ -611,6 +614,19 @@ mod tests {
       format!(
         "path:{}",
         fs::canonicalize("Cargo.toml").unwrap().to_string_lossy()
+      )
+    );
+  }
+
+  #[test]
+  fn daemon_request_rewrites_slash_relative_flake_ref() {
+    let reference = daemon_flake_ref("src/main.rs#packages").unwrap();
+
+    assert_eq!(
+      reference,
+      format!(
+        "path:{}#packages",
+        fs::canonicalize("src/main.rs").unwrap().to_string_lossy()
       )
     );
   }
