@@ -20,6 +20,12 @@ use futures_util::StreamExt as _;
 use tokio::runtime::Builder;
 use tracing::{info, warn};
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum OutputWrite {
+  Continue,
+  Closed,
+}
+
 fn main() {
   if env::var(WORKER_ENV).is_ok() {
     init_tracing_subscriber(Verbosity::default());
@@ -223,6 +229,7 @@ fn run_daemon_request(mut stream: UnixStream, request: &Request) -> Result<()> {
 
   let expect_done = !matches!(request, Request::Watch { .. });
   let mut saw_done = false;
+  let mut stdout = io::stdout().lock();
   let reader = BufReader::new(stream);
   for line in reader.lines() {
     let line = line?;
@@ -231,9 +238,19 @@ fn run_daemon_request(mut stream: UnixStream, request: &Request) -> Result<()> {
     }
     match serde_json::from_str(&line)? {
       Response::Event { event } => {
-        println!("{}", evix_json::event_line(&event))
+        if write_output_line(&mut stdout, &evix_json::event_line(&event))?
+          == OutputWrite::Closed
+        {
+          return Ok(());
+        }
       },
-      Response::Diff { diff } => println!("{}", evix_json::diff_line(&diff)),
+      Response::Diff { diff } => {
+        if write_output_line(&mut stdout, &evix_json::diff_line(&diff))?
+          == OutputWrite::Closed
+        {
+          return Ok(());
+        }
+      },
       Response::Done => {
         saw_done = true;
         break;
@@ -258,9 +275,14 @@ fn run_local_eval(config: &Config) -> Result<()> {
   with_runtime(async {
     let session = Session::open(config.clone()).await?;
     let mut events = session.stream();
+    let mut stdout = io::stdout().lock();
     while let Some(event) = events.next().await {
       let event = event?;
-      println!("{}", evix_json::event_line(&event));
+      if write_output_line(&mut stdout, &evix_json::event_line(&event))?
+        == OutputWrite::Closed
+      {
+        break;
+      }
       if let Event::Derivation(d) = &event
         && let Some(ref err) = d.gc_root_error
       {
@@ -275,11 +297,29 @@ fn run_local_watch(config: &Config) -> Result<()> {
   with_runtime(async {
     let session = Session::open(config.clone()).await?;
     let mut diffs = session.watch();
+    let mut stdout = io::stdout().lock();
     while let Some(diff) = diffs.next().await {
-      println!("{}", evix_json::diff_line(&diff?));
+      if write_output_line(&mut stdout, &evix_json::diff_line(&diff?))?
+        == OutputWrite::Closed
+      {
+        break;
+      }
     }
     Ok(())
   })
+}
+
+fn write_output_line<W: Write>(
+  writer: &mut W,
+  line: &str,
+) -> Result<OutputWrite> {
+  match writeln!(writer, "{line}") {
+    Ok(()) => Ok(OutputWrite::Continue),
+    Err(err) if err.kind() == io::ErrorKind::BrokenPipe => {
+      Ok(OutputWrite::Closed)
+    },
+    Err(err) => Err(err).context("writing stdout"),
+  }
 }
 
 fn with_runtime<T>(future: impl Future<Output = Result<T>>) -> Result<T> {
@@ -496,6 +536,27 @@ mod tests {
   }
 
   #[test]
+  fn output_line_treats_broken_pipe_as_closed() {
+    let mut writer = BrokenPipeWriter;
+
+    assert_eq!(
+      write_output_line(&mut writer, "{}").unwrap(),
+      OutputWrite::Closed
+    );
+  }
+
+  #[test]
+  fn output_line_writes_complete_line() {
+    let mut writer = Vec::new();
+
+    assert_eq!(
+      write_output_line(&mut writer, "{}").unwrap(),
+      OutputWrite::Continue
+    );
+    assert_eq!(String::from_utf8(writer).unwrap(), "{}\n");
+  }
+
+  #[test]
   fn daemon_request_canonicalizes_file_input() {
     let request = daemon_request(Request::eval(&Config::file("Cargo.toml")))
       .expect("daemon request");
@@ -579,5 +640,17 @@ mod tests {
       .as_nanos();
     env::temp_dir()
       .join(format!("evix-cli-{name}-{}-{nanos}.sock", process::id()))
+  }
+
+  struct BrokenPipeWriter;
+
+  impl io::Write for BrokenPipeWriter {
+    fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+      Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed"))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+      Ok(())
+    }
   }
 }
