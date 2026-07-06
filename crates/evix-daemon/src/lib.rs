@@ -183,6 +183,25 @@ struct ConnectionSlot {
   limiter: Arc<ConnectionLimiter>,
 }
 
+struct UmaskGuard(libc::mode_t);
+
+impl UmaskGuard {
+  fn set(mask: libc::mode_t) -> Self {
+    // SAFETY: daemon listener binding happens during single-threaded startup.
+    let previous = unsafe { libc::umask(mask) };
+    Self(previous)
+  }
+}
+
+impl Drop for UmaskGuard {
+  fn drop(&mut self) {
+    // SAFETY: restores the process umask captured by `UmaskGuard::set`.
+    unsafe {
+      libc::umask(self.0);
+    }
+  }
+}
+
 impl Drop for ConnectionSlot {
   fn drop(&mut self) {
     let mut active = self
@@ -199,6 +218,7 @@ fn bind_listener(
   reporter: &mut dyn StartupReporter,
 ) -> Result<UnixListener> {
   let listener = match prepare_socket_path(socket).and_then(|()| {
+    let _umask = UmaskGuard::set(0o077);
     UnixListener::bind(socket)
       .with_context(|| format!("binding {}", socket.display()))
   }) {
