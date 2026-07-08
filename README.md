@@ -67,14 +67,14 @@ evix eval --file ./default.nix
 
 ```json
 {
-  "attr": "packages.x86_64-linux.hello",
-  "attrPath": ["packages", "x86_64-linux", "hello"],
-  "name": "hello-2.12.1",
-  "system": "x86_64-linux",
-  "drvPath": "/nix/store/...-hello-2.12.1.drv",
-  "outputs": {
-    "out": "/nix/store/...-hello-2.12.1"
-  }
+    "attr": "packages.x86_64-linux.hello",
+    "attrPath": ["packages", "x86_64-linux", "hello"],
+    "name": "hello-2.12.1",
+    "system": "x86_64-linux",
+    "drvPath": "/nix/store/...-hello-2.12.1.drv",
+    "outputs": {
+        "out": "/nix/store/...-hello-2.12.1"
+    }
 }
 ```
 
@@ -138,10 +138,10 @@ $ evix worker --listen 127.0.0.1:7357 --token "$EVIX_REMOTE_TOKEN"
 ```
 
 Masters connect to worker services with `--remote ENDPOINT SYSTEMS WORKERS`.
-`SYSTEMS` is a comma-separated list of derivation systems that endpoint should
-emit; use an empty list to accept every system. `WORKERS` opens that many
-parallel worker connections to the endpoint. `--remote-token` must match the
-worker's `--token`; both flags can also read `EVIX_REMOTE_TOKEN`:
+`SYSTEMS` is a comma-separated list of derivation systems that endpoint owns;
+use an empty list to accept every system. `WORKERS` opens that many parallel
+worker connections to the endpoint. `--remote-token` must match the worker's
+`--token`; both flags can also read `EVIX_REMOTE_TOKEN`:
 
 ```bash
 $ evix eval --no-daemon --workers 0 \
@@ -240,11 +240,11 @@ work queue and feed their results back to the same scheduler.
   remotes.
 
 - **System routing.** Each remote declares the systems it owns (an empty list
-  means "any"). When a remote returns a derivation for a system it does not own,
-  the master does not drop it: the work item records that worker as having
-  rejected it and goes back on the queue for a different eligible worker. The
-  rejecting worker stays alive for compatible work. If every worker has rejected
-  a path, evaluation fails fatally with
+  means "any"). A derivation's `system` is only known after evaluating the
+  attribute, so a remote can still return a derivation for a system outside its
+  declared set. When that happens, the master reuses the returned event if some
+  worker in the pool owns that system. If no local, catch-all, or owning remote
+  exists, evaluation fails fatally with
   `no worker accepted derivation at <attr> for system <system>` rather than
   silently losing the derivation. Remote workers must use the same Nix store
   directory as the master; the setup handshake rejects a remote whose `storeDir`
@@ -267,14 +267,14 @@ Derivation events include the attribute path, derivation name, target system,
 
 ```json
 {
-  "attr": "packages.x86_64-linux.hello",
-  "attrPath": ["packages", "x86_64-linux", "hello"],
-  "name": "hello-2.12.1",
-  "system": "x86_64-linux",
-  "drvPath": "/nix/store/...-hello-2.12.1.drv",
-  "outputs": {
-    "out": "/nix/store/...-hello-2.12.1"
-  }
+    "attr": "packages.x86_64-linux.hello",
+    "attrPath": ["packages", "x86_64-linux", "hello"],
+    "name": "hello-2.12.1",
+    "system": "x86_64-linux",
+    "drvPath": "/nix/store/...-hello-2.12.1.drv",
+    "outputs": {
+        "out": "/nix/store/...-hello-2.12.1"
+    }
 }
 ```
 
@@ -282,14 +282,14 @@ With `--meta`, Evix attaches `meta` as freeform JSON when it can be forced:
 
 ```json
 {
-  "attr": "hello",
-  "drvPath": "/nix/store/...-hello.drv",
-  "outputs": {
-    "out": "/nix/store/...-hello"
-  },
-  "meta": {
-    "description": "A program that produces a familiar, friendly greeting"
-  }
+    "attr": "hello",
+    "drvPath": "/nix/store/...-hello.drv",
+    "outputs": {
+        "out": "/nix/store/...-hello"
+    },
+    "meta": {
+        "description": "A program that produces a familiar, friendly greeting"
+    }
 }
 ```
 
@@ -298,14 +298,14 @@ path:
 
 ```json
 {
-  "attr": "hello",
-  "drvPath": "/nix/store/...-hello.drv",
-  "outputs": {
-    "out": "/nix/store/...-hello"
-  },
-  "inputDrvs": {
-    "/nix/store/...-stdenv-linux.drv": ["out"]
-  }
+    "attr": "hello",
+    "drvPath": "/nix/store/...-hello.drv",
+    "outputs": {
+        "out": "/nix/store/...-hello"
+    },
+    "inputDrvs": {
+        "/nix/store/...-stdenv-linux.drv": ["out"]
+    }
 }
 ```
 
@@ -314,9 +314,9 @@ attribute names:
 
 ```json
 {
-  "attr": "release",
-  "drvPath": "/nix/store/...-release.drv",
-  "constituents": ["hello", "world"]
+    "attr": "release",
+    "drvPath": "/nix/store/...-release.drv",
+    "constituents": ["hello", "world"]
 }
 ```
 
@@ -324,9 +324,9 @@ Non-derivation attrsets emit child names for traversal:
 
 ```json
 {
-  "attr": "packages.x86_64-linux",
-  "attrPath": ["packages", "x86_64-linux"],
-  "attrs": ["hello", "git", "vim"]
+    "attr": "packages.x86_64-linux",
+    "attrPath": ["packages", "x86_64-linux"],
+    "attrs": ["hello", "git", "vim"]
 }
 ```
 
@@ -334,10 +334,10 @@ Evaluation errors are events too. They are non-fatal unless `fatal` is `true`:
 
 ```json
 {
-  "attr": "packages.x86_64-linux.broken",
-  "attrPath": ["packages", "x86_64-linux", "broken"],
-  "error": "attribute evaluation failed",
-  "fatal": false
+    "attr": "packages.x86_64-linux.broken",
+    "attrPath": ["packages", "x86_64-linux", "broken"],
+    "error": "attribute evaluation failed",
+    "fatal": false
 }
 ```
 
