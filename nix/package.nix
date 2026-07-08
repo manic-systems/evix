@@ -8,11 +8,12 @@
   rustc,
 }: let
   inherit (rustc) llvmPackages;
-  nixForBindings = nixVersions.latest;
+  workspace = lib.importTOML ../Cargo.toml;
+  nixForBindings = nixVersions.nix_2_34;
 in
   rustPlatform.buildRustPackage (finalAttrs: {
     pname = "evix";
-    version = "0.3.3";
+    version = workspace.workspace.package.version;
 
     src = let
       fs = lib.fileset;
