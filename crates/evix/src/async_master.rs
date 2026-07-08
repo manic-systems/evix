@@ -24,16 +24,14 @@ use crate::{
 };
 
 struct Scheduler {
-  todo:         VecDeque<WorkItem>,
-  active:       usize,
-  worker_count: usize,
-  error:        Option<String>,
+  todo:   VecDeque<WorkItem>,
+  active: usize,
+  error:  Option<String>,
 }
 
 #[derive(Clone)]
 struct WorkItem {
-  path:        Vec<String>,
-  rejected_by: Vec<usize>,
+  path: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -73,7 +71,7 @@ struct WorkerResult {
 
 enum EventDisposition {
   Emit,
-  Requeue { system: String },
+  Unowned { system: String },
 }
 
 enum NextWork {
@@ -106,25 +104,20 @@ where
   Fut: Future<Output = Result<()>>,
 {
   validate_config(&config)?;
+  let worker_config = WorkerConfig::from(&config);
   let specs = worker_specs(&config);
   if specs.is_empty() {
     bail!("evaluation requires at least one local or remote worker");
   }
-
   let mut scheduler = Scheduler {
-    todo:         VecDeque::from([WorkItem {
-      path:        Vec::new(),
-      rejected_by: Vec::new(),
-    }]),
-    active:       0,
-    worker_count: specs.len(),
-    error:        None,
+    todo:   VecDeque::from([WorkItem { path: Vec::new() }]),
+    active: 0,
+    error:  None,
   };
-  let worker_config = WorkerConfig::from(&config);
   let (result_tx, mut result_rx) = mpsc::channel(specs.len());
 
   let mut workers = Vec::with_capacity(specs.len());
-  for spec in specs {
+  for spec in &specs {
     let (work_tx, work_rx) = mpsc::channel(1);
     let handle = tokio::spawn(worker_task(
       worker_config.clone(),
@@ -134,7 +127,7 @@ where
       result_tx.clone(),
     ));
     workers.push(WorkerSlot {
-      spec,
+      spec: spec.clone(),
       work_tx,
       handle,
     });
@@ -146,6 +139,7 @@ where
     &mut workers,
     &mut result_rx,
     &cancel,
+    &specs,
     on_event,
   )
   .await;
@@ -211,27 +205,17 @@ impl Scheduler {
     self.active > 0
   }
 
-  fn next_for(&mut self, worker_id: usize) -> NextWork {
+  fn next_for(&mut self, _worker_id: usize) -> NextWork {
     if let Some(error) = self.error.clone() {
       return NextWork::Fatal(error);
     }
-    if let Some(index) = self
-      .todo
-      .iter()
-      .position(|item| !item.rejected_by.contains(&worker_id))
-    {
+    if let Some(index) = (!self.todo.is_empty()).then_some(0) {
       let item = self
         .todo
         .remove(index)
         .expect("position returned a valid index");
       self.active += 1;
       return NextWork::Dispatch(item);
-    }
-    if !self.todo.is_empty()
-      && let Some(error) = self.exhausted_error()
-    {
-      self.error = Some(error.clone());
-      return NextWork::Fatal(error);
     }
     if self.todo.is_empty() && self.active == 0 {
       return NextWork::Done;
@@ -242,7 +226,8 @@ impl Scheduler {
   fn complete(
     &mut self,
     spec: &WorkerSpec,
-    mut item: WorkItem,
+    workers: &[WorkerSpec],
+    item: WorkItem,
     event: &Event,
   ) -> CompletedWork {
     let attr = display_attr(&item.path);
@@ -254,10 +239,7 @@ impl Scheduler {
         for name in attrs {
           let mut child = item.path.clone();
           child.push(name.clone());
-          self.todo.push_back(WorkItem {
-            path:        child,
-            rejected_by: Vec::new(),
-          });
+          self.todo.push_back(WorkItem { path: child });
         }
         CompletedWork {
           emit:        true,
@@ -275,36 +257,21 @@ impl Scheduler {
         }
       },
       Event::Derivation(_) => {
-        match event_disposition(spec, event) {
+        match event_disposition(spec, workers, event) {
           EventDisposition::Emit => {
             CompletedWork {
               emit:        true,
               fatal_error: None,
             }
           },
-          EventDisposition::Requeue { system } => {
-            item.rejected_by.push(spec.id);
-            if item.rejected_by.len() >= self.worker_count {
-              let error = format!(
-                "no worker accepted derivation at {attr} for system {system}"
-              );
-              self.error = Some(error.clone());
-              CompletedWork {
-                emit:        false,
-                fatal_error: Some(error),
-              }
-            } else {
-              debug!(
-                worker = %spec.label,
-                attr = %attr,
-                system = %system,
-                "worker rejected derivation system; requeueing"
-              );
-              self.todo.push_back(item);
-              CompletedWork {
-                emit:        false,
-                fatal_error: None,
-              }
+          EventDisposition::Unowned { system } => {
+            let error = format!(
+              "no worker accepted derivation at {attr} for system {system}"
+            );
+            self.error = Some(error.clone());
+            CompletedWork {
+              emit:        false,
+              fatal_error: Some(error),
             }
           },
         }
@@ -317,17 +284,6 @@ impl Scheduler {
       },
     }
   }
-
-  fn exhausted_error(&self) -> Option<String> {
-    let item = self
-      .todo
-      .iter()
-      .find(|item| item.rejected_by.len() >= self.worker_count)?;
-    Some(format!(
-      "no worker accepted derivation at {}",
-      display_attr(&item.path)
-    ))
-  }
 }
 
 async fn coordinate<F, Fut>(
@@ -335,6 +291,7 @@ async fn coordinate<F, Fut>(
   workers: &mut [WorkerSlot],
   result_rx: &mut mpsc::Receiver<WorkerResult>,
   cancel: &AtomicBool,
+  specs: &[WorkerSpec],
   mut on_event: F,
 ) -> Result<RunOutcome>
 where
@@ -372,7 +329,7 @@ where
       Ok(event) => event,
       Err(err) => worker_failure_event(spec, &result.item, err),
     };
-    let completed = scheduler.complete(spec, result.item, &event);
+    let completed = scheduler.complete(spec, specs, result.item, &event);
 
     if completed.emit {
       on_event(event)
@@ -527,22 +484,39 @@ async fn abort_workers(workers: Vec<WorkerSlot>) -> Result<()> {
   Ok(())
 }
 
-fn event_disposition(spec: &WorkerSpec, event: &Event) -> EventDisposition {
-  let WorkerKind::Remote(remote) = &spec.kind else {
+fn event_disposition(
+  spec: &WorkerSpec,
+  workers: &[WorkerSpec],
+  event: &Event,
+) -> EventDisposition {
+  if !matches!(&spec.kind, WorkerKind::Remote(_)) {
     return EventDisposition::Emit;
-  };
+  }
   let Event::Derivation(drv) = event else {
     return EventDisposition::Emit;
   };
-  if remote.systems.is_empty()
-    || remote.systems.iter().any(|system| system == &drv.system)
+  if workers
+    .iter()
+    .any(|worker| worker_accepts_system(worker, &drv.system))
   {
     EventDisposition::Emit
   } else {
-    EventDisposition::Requeue {
+    EventDisposition::Unowned {
       system: drv.system.clone(),
     }
   }
+}
+
+fn worker_accepts_system(worker: &WorkerSpec, system: &str) -> bool {
+  match &worker.kind {
+    WorkerKind::Local { .. } => true,
+    WorkerKind::Remote(remote) => remote_accepts_system(remote, system),
+  }
+}
+
+fn remote_accepts_system(remote: &Remote, system: &str) -> bool {
+  remote.systems.is_empty()
+    || remote.systems.iter().any(|owned| owned == system)
 }
 
 fn display_attr(path: &[String]) -> String {

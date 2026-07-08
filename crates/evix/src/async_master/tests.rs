@@ -16,7 +16,7 @@ use crate::{
 };
 
 #[test]
-fn scheduler_requeues_derivation_rejected_by_remote_system() {
+fn scheduler_reuses_derivation_when_pool_owns_system() {
   let first = WorkerSpec {
     id:    0,
     label: "remote:x86".into(),
@@ -37,30 +37,26 @@ fn scheduler_requeues_derivation_rejected_by_remote_system() {
       token:    None,
     }),
   };
-  let mut scheduler = scheduler_with_workers(2);
+  let workers = vec![first, second];
+  let mut scheduler = scheduler_with_work();
 
-  let item = match scheduler.next_for(first.id) {
+  let item = match scheduler.next_for(workers[0].id) {
     NextWork::Dispatch(item) => item,
     _ => panic!("expected dispatch"),
   };
-  let completed =
-    scheduler.complete(&first, item, &derivation("aarch64-linux"));
-  assert!(!completed.emit);
-  assert!(completed.fatal_error.is_none());
-
-  assert!(matches!(scheduler.next_for(first.id), NextWork::Wait));
-  let item = match scheduler.next_for(second.id) {
-    NextWork::Dispatch(item) => item,
-    _ => panic!("expected second worker dispatch"),
-  };
-  let completed =
-    scheduler.complete(&second, item, &derivation("aarch64-linux"));
+  let completed = scheduler.complete(
+    &workers[0],
+    &workers,
+    item,
+    &derivation("aarch64-linux"),
+  );
   assert!(completed.emit);
   assert!(completed.fatal_error.is_none());
+  assert!(matches!(scheduler.next_for(workers[1].id), NextWork::Done));
 }
 
 #[test]
-fn scheduler_keeps_rejected_worker_alive_for_later_compatible_work() {
+fn scheduler_reuses_derivation_when_local_worker_owns_system() {
   let first = WorkerSpec {
     id:    0,
     label: "remote:x86".into(),
@@ -71,42 +67,22 @@ fn scheduler_keeps_rejected_worker_alive_for_later_compatible_work() {
       token:    None,
     }),
   };
-  let second = WorkerSpec {
-    id:    1,
-    label: "remote:aarch64".into(),
-    kind:  WorkerKind::Remote(Remote {
-      endpoint: "aarch64:7357".into(),
-      systems:  vec!["aarch64-linux".into()],
-      workers:  1,
-      token:    None,
-    }),
-  };
-  let mut scheduler = scheduler_with_workers(2);
+  let workers = vec![first, local_worker(1)];
+  let mut scheduler = scheduler_with_work();
 
-  let item = match scheduler.next_for(first.id) {
+  let item = match scheduler.next_for(workers[0].id) {
     NextWork::Dispatch(item) => item,
     _ => panic!("expected dispatch"),
   };
-  let completed =
-    scheduler.complete(&first, item, &derivation("aarch64-linux"));
-  assert!(!completed.emit);
-
-  assert!(matches!(scheduler.next_for(first.id), NextWork::Wait));
-  let item = match scheduler.next_for(second.id) {
-    NextWork::Dispatch(item) => item,
-    _ => panic!("expected second worker dispatch"),
-  };
-  scheduler.complete(&second, item, &Event::AttrSet {
-    attr:      "job".into(),
-    attr_path: vec!["job".into()],
-    attrs:     vec!["x86".into()],
-  });
-
-  let item = match scheduler.next_for(first.id) {
-    NextWork::Dispatch(item) => item,
-    _ => panic!("expected first worker to stay alive for new work"),
-  };
-  assert_eq!(item.path, vec!["job".to_owned(), "x86".to_owned()]);
+  let completed = scheduler.complete(
+    &workers[0],
+    &workers,
+    item,
+    &derivation("aarch64-linux"),
+  );
+  assert!(completed.emit);
+  assert!(completed.fatal_error.is_none());
+  assert!(matches!(scheduler.next_for(workers[1].id), NextWork::Done));
 }
 
 #[test]
@@ -121,14 +97,19 @@ fn scheduler_fails_when_no_worker_accepts_derivation_system() {
       token:    None,
     }),
   };
-  let mut scheduler = scheduler_with_workers(1);
-  let item = match scheduler.next_for(worker.id) {
+  let workers = vec![worker];
+  let mut scheduler = scheduler_with_work();
+  let item = match scheduler.next_for(workers[0].id) {
     NextWork::Dispatch(item) => item,
     _ => panic!("expected dispatch"),
   };
 
-  let completed =
-    scheduler.complete(&worker, item, &derivation("aarch64-linux"));
+  let completed = scheduler.complete(
+    &workers[0],
+    &workers,
+    item,
+    &derivation("aarch64-linux"),
+  );
   assert!(!completed.emit);
   assert!(
     completed
@@ -184,8 +165,7 @@ fn config_rejects_zero_item_timeout() {
 fn worker_failure_becomes_non_fatal_attribute_error() {
   let worker = local_worker(0);
   let item = WorkItem {
-    path:        vec!["jobs".into(), "bad".into()],
-    rejected_by: Vec::new(),
+    path: vec!["jobs".into(), "bad".into()],
   };
 
   let event = worker_failure_event(&worker, &item, anyhow!("process died"));
@@ -284,15 +264,13 @@ fn remote_worker_abort_drops_connection_without_shutdown() {
     });
 }
 
-fn scheduler_with_workers(worker_count: usize) -> Scheduler {
+fn scheduler_with_work() -> Scheduler {
   Scheduler {
-    todo: VecDeque::from([WorkItem {
-      path:        vec!["job".into()],
-      rejected_by: Vec::new(),
+    todo:   VecDeque::from([WorkItem {
+      path: vec!["job".into()],
     }]),
     active: 0,
-    worker_count,
-    error: None,
+    error:  None,
   }
 }
 
@@ -466,13 +444,9 @@ enum SimResult {
 /// hanging.
 fn run_sim(tree: &Tree, workers: &[WorkerSpec]) -> SimResult {
   let mut scheduler = Scheduler {
-    todo:         VecDeque::from([WorkItem {
-      path:        Vec::new(),
-      rejected_by: Vec::new(),
-    }]),
-    active:       0,
-    worker_count: workers.len(),
-    error:        None,
+    todo:   VecDeque::from([WorkItem { path: Vec::new() }]),
+    active: 0,
+    error:  None,
   };
   let mut emitted: Vec<Vec<String>> = Vec::new();
   let cap = (tree.len() + 1) * (workers.len() + 1) * 64 + 1024;
@@ -489,7 +463,7 @@ fn run_sim(tree: &Tree, workers: &[WorkerSpec]) -> SimResult {
         let event = produce(tree, &item.path);
         let is_drv = matches!(event, Event::Derivation(_));
         let path = item.path.clone();
-        let completed = scheduler.complete(worker, item, &event);
+        let completed = scheduler.complete(worker, workers, item, &event);
         if completed.emit && is_drv {
           emitted.push(path);
         }
