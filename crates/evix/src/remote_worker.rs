@@ -10,7 +10,7 @@ use tokio::{
   time::timeout,
 };
 use tokio_util::compat::{Compat, TokioAsyncReadCompatExt as _};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::{
   remote_proto,
@@ -38,6 +38,9 @@ pub async fn serve(addr: &str, token: Option<&str>) -> Result<()> {
     .await
     .with_context(|| format!("binding evix worker listener at {addr}"))?;
   let connections = Arc::new(Semaphore::new(MAX_REMOTE_CONNECTIONS));
+  if token.is_none() {
+    warn!(addr = %addr, "evix remote worker listening without authentication");
+  }
   info!(addr = %addr, "evix remote worker listening");
 
   loop {

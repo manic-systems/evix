@@ -1,3 +1,5 @@
+//! Daemon JSON protocol and shared wire types for Evix.
+
 use std::{collections::BTreeMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
