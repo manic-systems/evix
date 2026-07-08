@@ -4,14 +4,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::{AutoArg, Config, Input, eval::EvalOptions};
 
-pub(crate) const DEFAULT_ITEM_TIMEOUT_SECONDS: u64 = 30 * 60;
+pub(crate) const DEFAULT_ITEM_TIMEOUT_SECONDS: u64 =
+  evix_protocol::DEFAULT_ITEM_TIMEOUT_SECONDS;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkerConfig {
-  #[serde(with = "crate::serde_config::input")]
+  #[serde(with = "evix_protocol::serde_config::input")]
   pub(crate) input:                Input,
-  #[serde(with = "crate::serde_config::auto_args")]
+  #[serde(with = "evix_protocol::serde_config::auto_args")]
   pub(crate) auto_args:            Vec<(String, AutoArg)>,
   #[serde(default)]
   pub(crate) force_recurse:        bool,
