@@ -43,6 +43,7 @@ struct WorkerConfig {
   showInputDrvs @6 :Bool;
   overrideInputs @7 :List(StringPair);
   nixOptions @8 :List(StringPair);
+  itemTimeoutSeconds @9 :UInt64;
 }
 
 struct Input {
