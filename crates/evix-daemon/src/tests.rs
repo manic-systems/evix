@@ -35,12 +35,12 @@ fn missing_warm_session_returns_protocol_error() {
   let Response::Error { message } = response else {
     panic!("expected error response");
   };
-  assert!(message.contains("no warm session for requested evaluation input"));
+  assert!(message.contains("no warm session for requested daemon config"));
   assert!(
     handle
       .join()
       .unwrap()
-      .contains("no warm session for requested evaluation input")
+      .contains("no warm session for requested daemon config")
   );
 }
 
@@ -111,32 +111,56 @@ fn connection_limiter_releases_slots_on_drop() {
 }
 
 #[test]
-fn session_key_ignores_runtime_and_output_fields() {
-  let mut base = Config::expr("{ recurseForDerivations = true; }");
-  base
-    .auto_args
-    .push(("name".into(), evix::AutoArg::Str("value".into())));
-  base.force_recurse = true;
-  base
-    .override_inputs
-    .push(("nixpkgs".into(), "github:NixOS/nixpkgs".into()));
-  base
-    .nix_options
-    .push(("extra-experimental-features".into(), "flakes".into()));
+fn session_key_includes_daemon_protocol_fields() {
+  let base = Config::expr("{}");
+  let mut different_gc_roots = base.clone();
+  different_gc_roots.gc_roots_dir = Some("/nix/var/nix/gcroots/evix".into());
 
-  let mut variant = base.clone();
-  variant.gc_roots_dir = Some("/nix/var/nix/gcroots/evix".into());
-  variant.workers = 16;
-  variant.max_memory_size = 8192;
-  variant.item_timeout_seconds = 7;
-  variant.meta = true;
-  variant.show_input_drvs = true;
-  variant.remotes.push(evix::Remote {
+  let mut different_workers = base.clone();
+  different_workers.workers = 16;
+
+  let mut different_memory = base.clone();
+  different_memory.max_memory_size = 8192;
+
+  let mut different_timeout = base.clone();
+  different_timeout.item_timeout_seconds = 7;
+
+  let mut different_meta = base.clone();
+  different_meta.meta = true;
+
+  let mut different_input_drvs = base.clone();
+  different_input_drvs.show_input_drvs = true;
+
+  let mut different_remote = base.clone();
+  different_remote.remotes.push(evix::Remote {
     endpoint: "127.0.0.1:7357".into(),
     systems:  vec!["x86_64-linux".into()],
     workers:  4,
     token:    Some("secret".into()),
   });
+
+  let base_key = session_key(&base).unwrap();
+  for (field, config) in [
+    ("gc_roots_dir", different_gc_roots),
+    ("workers", different_workers),
+    ("max_memory_size", different_memory),
+    ("item_timeout_seconds", different_timeout),
+    ("meta", different_meta),
+    ("show_input_drvs", different_input_drvs),
+    ("remotes", different_remote),
+  ] {
+    assert_ne!(
+      base_key,
+      session_key(&config).unwrap(),
+      "{field} must affect the daemon session key"
+    );
+  }
+}
+
+#[test]
+fn session_key_ignores_local_worker_executable() {
+  let base = Config::expr("{}");
+  let mut variant = base.clone();
   variant.worker_exe = Some("/bin/evix-worker".into());
 
   assert_eq!(session_key(&base).unwrap(), session_key(&variant).unwrap());
@@ -180,7 +204,7 @@ fn session_key_keeps_evaluation_fields() {
 }
 
 #[test]
-fn warm_session_matches_runtime_field_variants() {
+fn warm_session_rejects_daemon_protocol_field_variants() {
   let runtime = Builder::new_current_thread().build().unwrap();
   let state = DaemonState::default();
   let base = Config::expr("{}");
@@ -196,10 +220,13 @@ fn warm_session_matches_runtime_field_variants() {
   query_config.workers = 8;
   query_config.meta = true;
 
-  assert!(Arc::ptr_eq(
-    &state.warm_session(&query_config).unwrap(),
-    &session
-  ));
+  let error = state
+    .warm_session(&query_config)
+    .err()
+    .expect("changed daemon config must miss warm session")
+    .to_string();
+
+  assert!(error.contains("requested daemon config"));
 }
 
 #[test]
@@ -212,10 +239,7 @@ fn missing_warm_session_names_matching_fields() {
     .expect("missing warm session must fail")
     .to_string();
 
-  assert!(error.contains("input"));
-  assert!(error.contains("--force-recurse"));
-  assert!(error.contains("--override-input"));
-  assert!(error.contains("--option"));
+  assert!(error.contains("all daemon-protocol config values"));
 }
 
 #[test]

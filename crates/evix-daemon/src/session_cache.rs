@@ -1,10 +1,11 @@
 use std::{
   collections::{HashMap, VecDeque},
+  path::PathBuf,
   sync::{Arc, Mutex},
 };
 
 use anyhow::{Context as _, Result};
-use evix::{AutoArg, Config, Input, Session};
+use evix::{AutoArg, Config, Input, Remote, Session};
 use serde::Serialize;
 
 const MAX_SESSIONS: usize = 32;
@@ -37,9 +38,9 @@ impl DaemonState {
       .expect("daemon session registry poisoned");
     sessions.get(&key).ok_or_else(|| {
       anyhow::anyhow!(
-        "no warm session for requested evaluation input; query/diff reuse a \
-         session only when input, args, --force-recurse, --override-input, \
-         and --option values match a completed eval or watch"
+        "no warm session for requested daemon config; query/diff reuse a \
+         session only when all daemon-protocol config values match a \
+         completed eval or watch"
       )
     })
   }
@@ -103,22 +104,36 @@ pub(crate) fn session_key(config: &Config) -> Result<String> {
 #[serde(rename_all = "camelCase")]
 struct SessionKeyConfig {
   #[serde(with = "evix_protocol::serde_config::input")]
-  input:           Input,
+  input:                Input,
   #[serde(with = "evix_protocol::serde_config::auto_args")]
-  auto_args:       Vec<(String, AutoArg)>,
-  force_recurse:   bool,
-  override_inputs: Vec<(String, String)>,
-  nix_options:     Vec<(String, String)>,
+  auto_args:            Vec<(String, AutoArg)>,
+  force_recurse:        bool,
+  gc_roots_dir:         Option<PathBuf>,
+  workers:              usize,
+  max_memory_size:      usize,
+  item_timeout_seconds: u64,
+  meta:                 bool,
+  show_input_drvs:      bool,
+  override_inputs:      Vec<(String, String)>,
+  nix_options:          Vec<(String, String)>,
+  remotes:              Vec<Remote>,
 }
 
 impl From<&Config> for SessionKeyConfig {
   fn from(config: &Config) -> Self {
     Self {
-      input:           config.input.clone(),
-      auto_args:       config.auto_args.clone(),
-      force_recurse:   config.force_recurse,
-      override_inputs: config.override_inputs.clone(),
-      nix_options:     config.nix_options.clone(),
+      input:                config.input.clone(),
+      auto_args:            config.auto_args.clone(),
+      force_recurse:        config.force_recurse,
+      gc_roots_dir:         config.gc_roots_dir.clone(),
+      workers:              config.workers,
+      max_memory_size:      config.max_memory_size,
+      item_timeout_seconds: config.item_timeout_seconds,
+      meta:                 config.meta,
+      show_input_drvs:      config.show_input_drvs,
+      override_inputs:      config.override_inputs.clone(),
+      nix_options:          config.nix_options.clone(),
+      remotes:              config.remotes.clone(),
     }
   }
 }
