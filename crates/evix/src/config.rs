@@ -63,6 +63,7 @@ impl Default for Config {
 
 impl Config {
   /// Create a config that evaluates a Nix expression string.
+  #[must_use]
   pub fn expr(expr: impl Into<String>) -> Self {
     Self {
       input: Input::Expr(expr.into()),
@@ -71,6 +72,7 @@ impl Config {
   }
 
   /// Create a config that evaluates a Nix file path.
+  #[must_use]
   pub fn file(path: impl Into<PathBuf>) -> Self {
     Self {
       input: Input::File(path.into()),
@@ -79,6 +81,7 @@ impl Config {
   }
 
   /// Create a config that evaluates a flake reference.
+  #[must_use]
   pub fn flake(reference: impl Into<String>) -> Self {
     Self {
       input: Input::Flake(reference.into()),
@@ -87,6 +90,7 @@ impl Config {
   }
 
   /// Start a chainable builder from this config.
+  #[must_use = "builders do nothing unless consumed with build"]
   pub fn builder(self) -> ConfigBuilder {
     ConfigBuilder { config: self }
   }
@@ -100,55 +104,66 @@ pub struct ConfigBuilder {
 
 impl ConfigBuilder {
   /// Start a builder for a Nix expression input.
+  #[must_use = "builders do nothing unless consumed with build"]
   pub fn expr(expr: impl Into<String>) -> Self {
     Config::expr(expr).builder()
   }
 
   /// Start a builder for a Nix file input.
+  #[must_use = "builders do nothing unless consumed with build"]
   pub fn file(path: impl Into<PathBuf>) -> Self {
     Config::file(path).builder()
   }
 
   /// Start a builder for a flake reference input.
+  #[must_use = "builders do nothing unless consumed with build"]
   pub fn flake(reference: impl Into<String>) -> Self {
     Config::flake(reference).builder()
   }
 
+  #[must_use = "builder methods return a modified builder"]
   pub fn force_recurse(mut self, enabled: bool) -> Self {
     self.config.force_recurse = enabled;
     self
   }
 
+  #[must_use = "builder methods return a modified builder"]
   pub fn gc_roots_dir(mut self, path: impl Into<PathBuf>) -> Self {
     self.config.gc_roots_dir = Some(path.into());
     self
   }
 
+  #[must_use = "builder methods return a modified builder"]
   pub fn workers(mut self, workers: usize) -> Self {
     self.config.workers = workers;
     self
   }
 
+  #[must_use = "builder methods return a modified builder"]
   pub fn max_memory_size(mut self, size: usize) -> Self {
     self.config.max_memory_size = size;
     self
   }
 
+  #[must_use = "builder methods return a modified builder"]
   pub fn item_timeout_seconds(mut self, seconds: u64) -> Self {
     self.config.item_timeout_seconds = seconds;
     self
   }
 
+  #[must_use = "builder methods return a modified builder"]
   pub fn meta(mut self, enabled: bool) -> Self {
     self.config.meta = enabled;
     self
   }
 
+  #[must_use = "builder methods return a modified builder"]
   pub fn show_input_drvs(mut self, enabled: bool) -> Self {
     self.config.show_input_drvs = enabled;
     self
   }
 
+  #[must_use = "builder methods return a modified builder"]
   pub fn auto_arg_expr(
     mut self,
     name: impl Into<String>,
@@ -161,6 +176,7 @@ impl ConfigBuilder {
     self
   }
 
+  #[must_use = "builder methods return a modified builder"]
   pub fn auto_arg_str(
     mut self,
     name: impl Into<String>,
@@ -173,6 +189,7 @@ impl ConfigBuilder {
     self
   }
 
+  #[must_use = "builder methods return a modified builder"]
   pub fn override_input(
     mut self,
     name: impl Into<String>,
@@ -185,6 +202,7 @@ impl ConfigBuilder {
     self
   }
 
+  #[must_use = "builder methods return a modified builder"]
   pub fn nix_option(
     mut self,
     key: impl Into<String>,
@@ -194,17 +212,20 @@ impl ConfigBuilder {
     self
   }
 
+  #[must_use = "builder methods return a modified builder"]
   pub fn remote(mut self, remote: Remote) -> Self {
     self.config.remotes.push(remote);
     self
   }
 
   /// Use a dedicated executable for local worker subprocesses.
+  #[must_use = "builder methods return a modified builder"]
   pub fn worker_exe(mut self, path: impl Into<PathBuf>) -> Self {
     self.config.worker_exe = Some(path.into());
     self
   }
 
+  #[must_use]
   pub fn build(self) -> Config {
     self.config
   }
