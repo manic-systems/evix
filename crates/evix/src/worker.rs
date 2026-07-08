@@ -1,13 +1,4 @@
-use std::{
-  env,
-  ffi::{OsStr, OsString},
-  fs,
-  mem,
-  path::{Path, PathBuf},
-  process,
-  sync::Arc,
-  time::{SystemTime, UNIX_EPOCH},
-};
+use std::{env, mem, path::Path, sync::Arc};
 
 use anyhow::{Context as _, Result, bail};
 use nix_bindings::{Context, EvalState, EvalStateBuilder, Store, Value};
@@ -42,7 +33,6 @@ pub async fn run() -> Result<()> {
   };
   debug!("worker initialized");
 
-  let _nix_options_file = apply_nix_options(&config.nix_options)?;
   let ctx = Arc::new(Context::new().context("Nix context")?);
   let store = Arc::new(Store::open(&ctx, None).context("Nix store")?);
   let eval_options = crate::eval::EvalOptions::from(&config);
@@ -92,106 +82,6 @@ pub async fn run() -> Result<()> {
   }
 
   Ok(())
-}
-
-/// Apply caller-provided Nix settings through Nix's eval-state config loader.
-///
-/// These are evix's `--option KEY VALUE` pairs. They must be set before the
-/// worker opens the store or builds an eval state so options such as
-/// `restrict-eval` and `allowed-uris` affect the evaluation that follows.
-fn apply_nix_options(
-  options: &[(String, String)],
-) -> Result<Option<NixOptionsFile>> {
-  if options.is_empty() {
-    return Ok(None);
-  }
-
-  for (key, value) in options {
-    validate_nix_option_part("key", key)?;
-    validate_nix_option_part("value", value)?;
-  }
-
-  let previous_env = env::var_os("NIX_USER_CONF_FILES");
-  let path = env::temp_dir().join(format!(
-    "evix-nix-options-{}-{}.conf",
-    process::id(),
-    SystemTime::now()
-      .duration_since(UNIX_EPOCH)
-      .map_or(0, |duration| duration.as_nanos())
-  ));
-  let mut contents = String::new();
-  for (key, value) in options {
-    contents.push_str(key);
-    contents.push_str(" = ");
-    contents.push_str(value);
-    contents.push('\n');
-  }
-
-  fs::write(&path, contents).context("writing Nix options file")?;
-  let conf_files = nix_user_conf_files(&path, previous_env.as_deref())?;
-  // SAFETY: called once at worker startup, before any threads are spawned.
-  unsafe {
-    env::set_var("NIX_USER_CONF_FILES", conf_files);
-  }
-  Ok(Some(NixOptionsFile { path, previous_env }))
-}
-
-struct NixOptionsFile {
-  path:         PathBuf,
-  previous_env: Option<OsString>,
-}
-
-impl Drop for NixOptionsFile {
-  fn drop(&mut self) {
-    let _ = fs::remove_file(&self.path);
-    // SAFETY: workers are single-threaded while the eval state is built, and
-    // this guard is dropped immediately afterwards.
-    unsafe {
-      match &self.previous_env {
-        Some(value) => env::set_var("NIX_USER_CONF_FILES", value),
-        None => env::remove_var("NIX_USER_CONF_FILES"),
-      }
-    }
-  }
-}
-
-fn validate_nix_option_part(label: &str, part: &str) -> Result<()> {
-  if part.contains(['\n', '\r']) {
-    bail!("nix option {label} must not contain newlines");
-  }
-
-  match part.split_whitespace().next() {
-    Some("include" | "!include") => {
-      bail!("nix option {label} must not start with include directives")
-    },
-    _ => Ok(()),
-  }
-}
-
-fn nix_user_conf_files(
-  generated: &Path,
-  previous: Option<&OsStr>,
-) -> Result<OsString> {
-  let mut paths = vec![generated.to_path_buf()];
-
-  if let Some(previous) = previous.filter(|value| !value.is_empty()) {
-    paths.extend(env::split_paths(previous));
-  } else if let Some(default_config) = default_nix_user_conf_file() {
-    paths.push(default_config);
-  }
-
-  env::join_paths(paths).context("joining NIX_USER_CONF_FILES")
-}
-
-fn default_nix_user_conf_file() -> Option<PathBuf> {
-  let config_dir =
-    env::var_os("XDG_CONFIG_HOME")
-      .map(PathBuf::from)
-      .or_else(|| {
-        env::var_os("HOME").map(|home| PathBuf::from(home).join(".config"))
-      })?;
-  let config_file = config_dir.join("nix/nix.conf");
-  config_file.exists().then_some(config_file)
 }
 
 /// Build a new [`EvalState`] from the given store, attaching flake settings
@@ -435,60 +325,7 @@ fn get_maxrss_kb() -> usize {
 
 #[cfg(test)]
 mod tests {
-  use std::sync::Mutex;
-
   use super::*;
-
-  static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-  struct EnvVarGuard {
-    name:     &'static str,
-    previous: Option<OsString>,
-  }
-
-  impl EnvVarGuard {
-    fn set(name: &'static str, value: Option<&OsStr>) -> Self {
-      let guard = Self {
-        name,
-        previous: env::var_os(name),
-      };
-      // SAFETY: tests using environment mutation hold ENV_LOCK.
-      unsafe {
-        match value {
-          Some(value) => env::set_var(name, value),
-          None => env::remove_var(name),
-        }
-      }
-      guard
-    }
-  }
-
-  impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-      // SAFETY: tests using environment mutation hold ENV_LOCK.
-      unsafe {
-        match &self.previous {
-          Some(value) => env::set_var(self.name, value),
-          None => env::remove_var(self.name),
-        }
-      }
-    }
-  }
-
-  #[test]
-  fn rejects_newlines_in_nix_option_parts() {
-    assert!(validate_nix_option_part("key", "foo\nbar").is_err());
-    assert!(validate_nix_option_part("value", "foo\rbar").is_err());
-  }
-
-  #[test]
-  fn rejects_include_directive_nix_option_parts() {
-    assert!(validate_nix_option_part("key", " include /tmp/nix.conf").is_err());
-    assert!(
-      validate_nix_option_part("value", "!include /tmp/nix.conf").is_err()
-    );
-    assert!(validate_nix_option_part("value", "allowed-uris").is_ok());
-  }
 
   #[cfg(feature = "flake")]
   #[test]
@@ -509,64 +346,5 @@ mod tests {
 
     assert_eq!(flake_lock_mode(false), LockMode::Virtual);
     assert!(!is_local_flake_reference("github:NixOS/nixpkgs#hello"));
-  }
-
-  #[test]
-  fn nix_options_prepend_existing_user_conf_files_and_restore_env() {
-    let _lock = ENV_LOCK.lock().expect("env lock poisoned");
-    let previous = OsStr::new("/tmp/nix-a.conf:/tmp/nix-b.conf");
-    let _env_guard = EnvVarGuard::set("NIX_USER_CONF_FILES", Some(previous));
-
-    let options_file =
-      apply_nix_options(&[("restrict-eval".into(), "true".into())])
-        .expect("nix options applied")
-        .expect("options file created");
-    let options_path = options_file.path.clone();
-
-    let conf_files =
-      env::var_os("NIX_USER_CONF_FILES").expect("NIX_USER_CONF_FILES set");
-    let paths: Vec<_> = env::split_paths(&conf_files).collect();
-
-    assert_eq!(paths[0], options_path);
-    assert_eq!(paths[1], PathBuf::from("/tmp/nix-a.conf"));
-    assert_eq!(paths[2], PathBuf::from("/tmp/nix-b.conf"));
-    assert!(options_path.exists());
-
-    drop(options_file);
-
-    assert!(!options_path.exists());
-    assert_eq!(env::var_os("NIX_USER_CONF_FILES"), Some(previous.into()));
-  }
-
-  #[test]
-  fn nix_options_include_default_user_conf_file_when_env_is_absent() {
-    let _lock = ENV_LOCK.lock().expect("env lock poisoned");
-    let test_dir = env::temp_dir().join(format!(
-      "evix-nix-options-test-{}-{}",
-      process::id(),
-      SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time after epoch")
-        .as_nanos()
-    ));
-    let config_dir = test_dir.join("xdg");
-    let default_config = config_dir.join("nix/nix.conf");
-    fs::create_dir_all(default_config.parent().expect("parent directory"))
-      .expect("create config dir");
-    fs::write(&default_config, "experimental-features = nix-command\n")
-      .expect("write default config");
-
-    let _nix_env = EnvVarGuard::set("NIX_USER_CONF_FILES", None);
-    let _xdg_env =
-      EnvVarGuard::set("XDG_CONFIG_HOME", Some(config_dir.as_os_str()));
-    let generated = test_dir.join("generated.conf");
-
-    let conf_files =
-      nix_user_conf_files(&generated, None).expect("conf files joined");
-    let paths: Vec<_> = env::split_paths(&conf_files).collect();
-
-    assert_eq!(paths, vec![generated, default_config]);
-
-    fs::remove_dir_all(test_dir).expect("remove test dir");
   }
 }
