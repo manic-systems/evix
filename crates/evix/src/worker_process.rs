@@ -452,7 +452,7 @@ mod tests {
         let (mut writer, reader) = tokio::io::duplex(1024);
         let capture = tokio::spawn(capture_stderr("test".into(), reader));
 
-        writer.write_all(&vec![b'a'; 10]).await.unwrap();
+        writer.write_all(&[b'a'; 10]).await.unwrap();
         writer
           .write_all(&vec![b'b'; STDERR_TAIL_LIMIT])
           .await
