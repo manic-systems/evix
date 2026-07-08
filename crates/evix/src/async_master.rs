@@ -628,7 +628,7 @@ impl WorkerClient {
   async fn abort(&mut self) {
     match self {
       Self::Local(worker) => worker.abort().await,
-      Self::Remote(worker) => worker.stop().await,
+      Self::Remote(worker) => worker.abort().await,
     }
   }
 
