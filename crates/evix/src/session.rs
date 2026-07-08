@@ -32,6 +32,10 @@ use crate::{
 /// This is the library-first entry point for embedders. It preserves evix's
 /// worker process isolation while exposing stream, watch, diff, and query
 /// operations over warm session state.
+///
+/// Initial event streams are single-use. After an initial evaluation failure,
+/// later stream/query/diff calls report the stored failure instead of retrying
+/// implicitly.
 pub struct Session {
   config:    Config,
   cancel:    Arc<AtomicBool>,
@@ -67,7 +71,7 @@ impl Session {
     let (tx, rx) = futures_mpsc::unbounded();
 
     if !self.start_initial_evaluation() {
-      let _ = tx.unbounded_send(Err(Error::SessionStreamConsumed));
+      let _ = tx.unbounded_send(Err(self.initial_unavailable_error()));
       return rx;
     }
 
@@ -137,7 +141,7 @@ impl Session {
     let (mut tx, rx) = futures_mpsc::channel(bounded_capacity(capacity));
 
     if !self.start_initial_evaluation() {
-      let _ = tx.try_send(Err(Error::SessionStreamConsumed));
+      let _ = tx.try_send(Err(self.initial_unavailable_error()));
       return rx;
     }
 
@@ -344,6 +348,11 @@ impl Session {
   ) -> Result<Vec<Derivation>> {
     let guard = self.state.read().await;
     if !guard.completed {
+      if let Some(error) = &guard.error {
+        return Err(Error::EvaluationFailed {
+          message: error.clone(),
+        });
+      }
       return Err(Error::InitialEvaluationIncomplete {
         operation: "query_snapshot",
       });
@@ -368,6 +377,11 @@ impl Session {
     let previous = {
       let guard = self.state.read().await;
       if !guard.completed {
+        if let Some(error) = &guard.error {
+          return Err(Error::EvaluationFailed {
+            message: error.clone(),
+          });
+        }
         return Err(Error::InitialEvaluationIncomplete {
           operation: "diff_once",
         });
@@ -426,6 +440,17 @@ impl Session {
       },
       InitialEvaluation::Running | InitialEvaluation::Finished => false,
     }
+  }
+
+  fn initial_unavailable_error(&self) -> Error {
+    if let Ok(state) = self.state.try_read()
+      && let Some(error) = &state.error
+    {
+      return Error::EvaluationFailed {
+        message: error.clone(),
+      };
+    }
+    Error::SessionStreamConsumed
   }
 }
 
@@ -551,6 +576,8 @@ impl Drop for Session {
 
 #[cfg(test)]
 mod tests {
+  use std::{error::Error as _, process};
+
   use futures_util::StreamExt as _;
 
   use super::*;
@@ -601,6 +628,38 @@ mod tests {
     assert!(matches!(error, Error::InitialEvaluationIncomplete {
       operation: "query_snapshot",
     }));
+  }
+
+  #[test]
+  fn failed_initial_evaluation_is_reported_after_stream_consumed() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+      .enable_io()
+      .build()
+      .unwrap();
+
+    runtime.block_on(async {
+      let worker_exe = std::env::temp_dir()
+        .join(format!("evix-missing-worker-{}", process::id()));
+      let config = Config::expr("{}").builder().worker_exe(worker_exe).build();
+      let session = Session::open(config).await.unwrap();
+
+      let mut first = Box::pin(session.stream());
+      let first_error = first.next().await.unwrap().unwrap_err();
+
+      assert!(first_error.source().is_some());
+      assert!(first_error.to_string().contains("spawning worker process"));
+      assert!(first.next().await.is_none());
+
+      let mut second = Box::pin(session.stream());
+      let second_error = second.next().await.unwrap().unwrap_err();
+      let query_error =
+        session.query_snapshot(Filter::default()).await.unwrap_err();
+      let diff_error = session.diff_once().await.unwrap_err();
+
+      assert!(matches!(second_error, Error::EvaluationFailed { .. }));
+      assert!(matches!(query_error, Error::EvaluationFailed { .. }));
+      assert!(matches!(diff_error, Error::EvaluationFailed { .. }));
+    });
   }
 
   #[test]

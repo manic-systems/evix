@@ -406,11 +406,7 @@ pub fn run_worker() -> Result<()> {
   let runtime = tokio::runtime::Builder::new_current_thread()
     .enable_io()
     .build()
-    .map_err(|err| {
-      Error::Internal {
-        message: err.to_string(),
-      }
-    })?;
+    .map_err(|err| Error::internal(err.into()))?;
   runtime.block_on(worker::run()).map_err(Error::from)
 }
 
