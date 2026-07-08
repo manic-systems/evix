@@ -2,13 +2,17 @@ use std::{env, fs, path::PathBuf};
 
 fn main() {
   println!("cargo:rerun-if-changed=schema/worker.capnp");
+  println!("cargo:rerun-if-changed=src/generated/worker_capnp.rs");
 
-  // docs.rs has no Nix system libraries. Write empty bindings so the crate
-  // compiles and return before any pkg-config or cc invocation.
+  // docs.rs does not provide the Cap'n Proto compiler. Use the checked-in
+  // generated schema instead.
   if env::var("DOCS_RS").is_ok() {
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
-    fs::write(out_path.join("bindings.rs"), "")
-      .expect("write stub bindings for docs.rs");
+    fs::copy(
+      "src/generated/worker_capnp.rs",
+      out_path.join("worker_capnp.rs"),
+    )
+    .expect("copy generated Cap'n Proto schema");
     return;
   }
 
