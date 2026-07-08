@@ -1,0 +1,2 @@
+# This is generated, so let's mark it as such.
+crates/evix/src/generated/worker_capnp.rs linguist-generated=true
