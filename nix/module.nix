@@ -33,17 +33,31 @@ in {
     systemd.user.services.evixd = mkIf cfg.daemon.enable {
       description = "evix daemon";
       wantedBy = ["default.target"];
-      wants = ["nix-daemon.service"];
       serviceConfig = {
         ExecStart = "${lib.getExe' cfg.package "evixd"} --foreground";
         Restart = "on-failure";
-        Environment = lib.optional (cfg.daemon.socket != null) [
+        Environment = lib.optionals (cfg.daemon.socket != null) [
           "EVIX_SOCKET=${cfg.daemon.socket}"
         ];
 
         WorkingDirectory = "";
-        RuntimeDirectory = "evix";
-        RuntimeDirectoryMode = "0755";
+        PrivateDevices = true;
+        ProtectClock = true;
+        ProtectControlGroups = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        RestrictSUIDSGID = true;
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ReadWritePaths = [
+          "%t"
+          "/tmp"
+          "/var/tmp"
+          "-%h/.cache/nix"
+          "-%h/.local/share/nix"
+          "-/nix/var/nix/gcroots"
+        ];
       };
     };
   };
