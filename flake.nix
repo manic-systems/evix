@@ -7,22 +7,18 @@
   }: let
     systems = ["x86_64-linux" "aarch64-linux"];
     forEachSystem = nixpkgs.lib.genAttrs systems;
-    pkgsForEach = system:
-      import nixpkgs {
-        localSystem.system = system;
-        overlays = [self.overlays.evix];
-      };
-  in {
-    overlays = {
-      evix = final: _: {
-        evix = final.callPackage ./nix/package.nix {};
-      };
-    };
+    pkgsForEach = system: nixpkgs.legacyPackages.${system};
 
+    # nix-bindings links against Nix C++ headers; package and dev shell must
+    # agree on this version until the crate compatibility window changes.
+    nixForBindingsFor = pkgs: pkgs.nixVersions.nix_2_34;
+  in {
     packages = forEachSystem (system: let
       pkgs = pkgsForEach system;
     in {
-      evix = pkgs.callPackage ./nix/package.nix {};
+      evix = pkgs.callPackage ./nix/package.nix {
+        nixForBindings = nixForBindingsFor pkgs;
+      };
       default = self.packages.${system}.evix;
     });
 
@@ -34,7 +30,9 @@
     devShells = forEachSystem (system: let
       pkgs = pkgsForEach system;
     in {
-      default = pkgs.callPackage ./nix/shell.nix {};
+      default = pkgs.callPackage ./nix/shell.nix {
+        nixForBindings = nixForBindingsFor pkgs;
+      };
     });
 
     checks = forEachSystem (system: let

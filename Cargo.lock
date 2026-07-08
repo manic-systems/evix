@@ -236,6 +236,7 @@ dependencies = [
  "futures-util",
  "libc",
  "pound",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
