@@ -53,12 +53,17 @@ impl DaemonState {
 
   fn warm_session(&self, config: &Config) -> Result<Arc<Session>> {
     let key = session_key(config)?;
-    self
+    let mut sessions = self
       .sessions
       .lock()
-      .expect("daemon session registry poisoned")
-      .get(&key)
-      .ok_or_else(|| anyhow::anyhow!("no warm session for requested config"))
+      .expect("daemon session registry poisoned");
+    sessions.get(&key).ok_or_else(|| {
+      anyhow::anyhow!(
+        "no warm session for requested evaluation input; query/diff reuse a \
+         session only when input, args, --force-recurse, --override-input, \
+         and --option values match a completed eval or watch"
+      )
+    })
   }
 }
 
@@ -112,7 +117,22 @@ impl<T: Clone> SessionRegistry<T> {
 }
 
 fn session_key(config: &Config) -> Result<String> {
-  serde_json::to_string(config).context("serializing session key")
+  serde_json::to_string(&session_key_config(config))
+    .context("serializing session key")
+}
+
+fn session_key_config(config: &Config) -> Config {
+  let defaults = Config::default();
+  let mut key = config.clone();
+  key.gc_roots_dir = None;
+  key.workers = defaults.workers;
+  key.max_memory_size = defaults.max_memory_size;
+  key.item_timeout_seconds = defaults.item_timeout_seconds;
+  key.meta = false;
+  key.show_input_drvs = false;
+  key.remotes.clear();
+  key.worker_exe = None;
+  key
 }
 
 pub fn default_socket_path() -> PathBuf {
@@ -940,12 +960,12 @@ mod tests {
     let Response::Error { message } = response else {
       panic!("expected error response");
     };
-    assert!(message.contains("no warm session for requested config"));
+    assert!(message.contains("no warm session for requested evaluation input"));
     assert!(
       handle
         .join()
         .unwrap()
-        .contains("no warm session for requested config")
+        .contains("no warm session for requested evaluation input")
     );
   }
 
@@ -1009,6 +1029,114 @@ mod tests {
     drop(slot);
 
     assert!(limiter.acquire().is_some());
+  }
+
+  #[test]
+  fn session_key_ignores_runtime_and_output_fields() {
+    let mut base = Config::expr("{ recurseForDerivations = true; }");
+    base
+      .auto_args
+      .push(("name".into(), evix::AutoArg::Str("value".into())));
+    base.force_recurse = true;
+    base
+      .override_inputs
+      .push(("nixpkgs".into(), "github:NixOS/nixpkgs".into()));
+    base
+      .nix_options
+      .push(("extra-experimental-features".into(), "flakes".into()));
+
+    let mut variant = base.clone();
+    variant.gc_roots_dir = Some("/nix/var/nix/gcroots/evix".into());
+    variant.workers = 16;
+    variant.max_memory_size = 8192;
+    variant.item_timeout_seconds = 7;
+    variant.meta = true;
+    variant.show_input_drvs = true;
+    variant.remotes.push(evix::Remote {
+      endpoint: "127.0.0.1:7357".into(),
+      systems:  vec!["x86_64-linux".into()],
+      workers:  4,
+      token:    Some("secret".into()),
+    });
+    variant.worker_exe = Some("/bin/evix-worker".into());
+
+    assert_eq!(session_key(&base).unwrap(), session_key(&variant).unwrap());
+  }
+
+  #[test]
+  fn session_key_keeps_evaluation_fields() {
+    let base = Config::expr("{}");
+
+    let mut different_input = base.clone();
+    different_input.input = evix::Input::Expr("{ changed = true; }".into());
+
+    let mut different_arg = base.clone();
+    different_arg
+      .auto_args
+      .push(("name".into(), evix::AutoArg::Str("value".into())));
+
+    let mut different_recurse = base.clone();
+    different_recurse.force_recurse = true;
+
+    let mut different_override = base.clone();
+    different_override
+      .override_inputs
+      .push(("nixpkgs".into(), "github:NixOS/nixpkgs".into()));
+
+    let mut different_option = base.clone();
+    different_option
+      .nix_options
+      .push(("accept-flake-config".into(), "true".into()));
+
+    let base_key = session_key(&base).unwrap();
+    for config in [
+      different_input,
+      different_arg,
+      different_recurse,
+      different_override,
+      different_option,
+    ] {
+      assert_ne!(base_key, session_key(&config).unwrap());
+    }
+  }
+
+  #[test]
+  fn warm_session_matches_runtime_field_variants() {
+    let runtime = Builder::new_current_thread().build().unwrap();
+    let state = DaemonState::default();
+    let base = Config::expr("{}");
+    let session =
+      Arc::new(runtime.block_on(Session::open(base.clone())).unwrap());
+    state
+      .sessions
+      .lock()
+      .expect("daemon session registry poisoned")
+      .insert(session_key(&base).unwrap(), Arc::clone(&session));
+
+    let mut query_config = base.clone();
+    query_config.workers = 8;
+    query_config.meta = true;
+
+    assert!(Arc::ptr_eq(
+      &state.warm_session(&query_config).unwrap(),
+      &session
+    ));
+  }
+
+  #[test]
+  fn missing_warm_session_names_matching_fields() {
+    let state = DaemonState::default();
+
+    let error = state
+      .warm_session(&Config::expr("{}"))
+      .err()
+      .expect("missing warm session must fail")
+      .to_string();
+
+    assert!(error.contains("input"));
+    assert!(error.contains("--force-recurse"));
+    assert!(error.contains("--override-input"));
+    assert!(error.contains("--option"));
   }
 
   #[test]
