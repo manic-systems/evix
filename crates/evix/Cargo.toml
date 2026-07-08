@@ -15,6 +15,7 @@ flake   = [ "nix-bindings/flake" ]
 anyhow.workspace          = true
 capnp.workspace           = true
 capnp-futures.workspace   = true
+evix-protocol.workspace   = true
 futures-channel.workspace = true
 futures-core.workspace    = true
 futures-util.workspace    = true
@@ -31,6 +32,6 @@ tracing.workspace         = true
 capnpc.workspace = true
 
 [[test]]
-name = "session"
-path = "tests/session.rs"
 harness = false
+name    = "session"
+path    = "tests/session.rs"

@@ -195,6 +195,7 @@ dependencies = [
  "capnp",
  "capnp-futures",
  "capnpc",
+ "evix-protocol",
  "futures-channel",
  "futures-core",
  "futures-util",
@@ -245,7 +246,6 @@ dependencies = [
 name = "evix-protocol"
 version = "1.2.0"
 dependencies = [
- "evix",
  "serde",
  "serde_json",
 ]
