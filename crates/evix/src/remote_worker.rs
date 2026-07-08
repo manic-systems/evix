@@ -19,7 +19,10 @@ use crate::{
   worker_process::{WorkResponse, WorkerProcess, WorkerStatus},
 };
 
-const REMOTE_READ_TIMEOUT: Duration = Duration::from_secs(30);
+// Setup is the only control-plane read that should fail quickly. A connected
+// worker may sit idle between work items, and in-flight work is governed by
+// `item_timeout_seconds`.
+const REMOTE_SETUP_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_REMOTE_CONNECTIONS: usize = 64;
 const ALLOWED_REMOTE_NIX_OPTIONS: &[&str] = &[
   "accept-flake-config",
@@ -71,8 +74,24 @@ pub async fn serve(addr: &str, token: Option<&str>) -> Result<()> {
 }
 
 pub(crate) struct RemoteWorker {
-  label:  String,
-  stream: Option<Compat<TcpStream>>,
+  label:    String,
+  stream:   Option<Compat<TcpStream>>,
+  timeouts: RemoteTimeouts,
+}
+
+#[derive(Clone, Copy)]
+struct RemoteTimeouts {
+  setup:         Duration,
+  work_response: Duration,
+}
+
+impl RemoteTimeouts {
+  fn from_config(config: &WorkerConfig) -> Self {
+    Self {
+      setup:         REMOTE_SETUP_TIMEOUT,
+      work_response: Duration::from_secs(config.item_timeout_seconds),
+    }
+  }
 }
 
 impl RemoteWorker {
@@ -83,6 +102,7 @@ impl RemoteWorker {
     label: impl Into<String>,
   ) -> Result<Self> {
     let label = label.into();
+    let timeouts = RemoteTimeouts::from_config(config);
     let expected_store_dir = local_store_dir()?;
     debug!(worker = %label, endpoint = %endpoint, "connecting remote worker");
     let tcp = TcpStream::connect(endpoint).await.with_context(|| {
@@ -105,26 +125,30 @@ impl RemoteWorker {
     })
     .await
     .with_context(|| format!("sending setup to remote worker {label}"))?;
-    let ready = read_server_timeout(&mut stream).await.with_context(|| {
-      format!("reading handshake from remote worker {label}")
-    })?;
+    let ready = read_server_timeout(&mut stream, timeouts.setup)
+      .await
+      .with_context(|| {
+        format!("reading handshake from remote worker {label}")
+      })?;
     remote_proto::expect_ready(ready, &label)?;
     info!(worker = %label, "remote worker ready");
 
     Ok(Self {
       label,
       stream: Some(stream),
+      timeouts,
     })
   }
 
   pub(crate) async fn work(&mut self, path: &[String]) -> Result<crate::Event> {
     let label = self.label.clone();
+    let response_timeout = self.timeouts.work_response;
     let stream = self.stream()?;
     remote_proto::write_client(stream, &ClientMessage::Work(path.to_vec()))
       .await
       .with_context(|| format!("sending work to {label}"))?;
 
-    let event = match read_server_timeout(stream)
+    let event = match read_server_timeout(stream, response_timeout)
       .await
       .with_context(|| format!("reading event from {label}"))?
     {
@@ -137,7 +161,7 @@ impl RemoteWorker {
       },
     };
 
-    match read_server_timeout(stream)
+    match read_server_timeout(stream, response_timeout)
       .await
       .with_context(|| format!("reading status from {label}"))?
     {
@@ -180,34 +204,35 @@ async fn serve_connection(
   expected_token: Option<&str>,
 ) -> Result<()> {
   let mut stream = stream.compat();
-  let config = match read_client_timeout(&mut stream).await? {
-    ClientMessage::Setup {
-      config,
-      token,
-      expected_store_dir,
-    } => {
-      if !token_matches(token.as_deref(), expected_token) {
-        remote_proto::write_server(
-          &mut stream,
-          &ServerMessage::Error("remote worker authentication failed".into()),
-        )
-        .await?;
-        bail!("remote worker authentication failed");
-      }
-      validate_store_dir(expected_store_dir.as_deref())?;
-      validate_remote_config(&config)?;
-      config
-    },
-    other => {
-      bail!("expected setup as first remote worker message, got {other:?}")
-    },
-  };
+  let config =
+    match read_client_timeout(&mut stream, REMOTE_SETUP_TIMEOUT).await? {
+      ClientMessage::Setup {
+        config,
+        token,
+        expected_store_dir,
+      } => {
+        if !token_matches(token.as_deref(), expected_token) {
+          remote_proto::write_server(
+            &mut stream,
+            &ServerMessage::Error("remote worker authentication failed".into()),
+          )
+          .await?;
+          bail!("remote worker authentication failed");
+        }
+        validate_store_dir(expected_store_dir.as_deref())?;
+        validate_remote_config(&config)?;
+        config
+      },
+      other => {
+        bail!("expected setup as first remote worker message, got {other:?}")
+      },
+    };
 
   let mut worker = WorkerProcess::spawn_local(&config, "remote", None).await?;
   remote_proto::write_server(&mut stream, &ServerMessage::Ready).await?;
 
   loop {
-    match read_client_timeout(&mut stream).await {
+    match remote_proto::read_client(&mut stream).await {
       Ok(ClientMessage::Work(path)) => {
         let race = {
           let work = worker.work(&path).fuse();
@@ -330,20 +355,26 @@ fn token_matches(actual: Option<&str>, expected: Option<&str>) -> bool {
   diff == 0
 }
 
-async fn read_client_timeout<R>(reader: &mut R) -> Result<ClientMessage>
+async fn read_client_timeout<R>(
+  reader: &mut R,
+  duration: Duration,
+) -> Result<ClientMessage>
 where
   R: AsyncRead + Unpin,
 {
-  timeout(REMOTE_READ_TIMEOUT, remote_proto::read_client(reader))
+  timeout(duration, remote_proto::read_client(reader))
     .await
     .context("timed out reading remote worker request")?
 }
 
-async fn read_server_timeout<R>(reader: &mut R) -> Result<ServerMessage>
+async fn read_server_timeout<R>(
+  reader: &mut R,
+  duration: Duration,
+) -> Result<ServerMessage>
 where
   R: AsyncRead + Unpin,
 {
-  timeout(REMOTE_READ_TIMEOUT, remote_proto::read_server(reader))
+  timeout(duration, remote_proto::read_server(reader))
     .await
     .context("timed out reading remote worker response")?
 }
@@ -376,6 +407,8 @@ fn set_tcp_keepalive(_stream: &TcpStream) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+  use tokio_util::compat::TokioAsyncReadCompatExt as _;
+
   use super::*;
   use crate::Config;
 
@@ -426,5 +459,71 @@ mod tests {
     assert!(!token_matches(Some("secret-extra"), Some("secret")));
     assert!(!token_matches(None, Some("secret")));
     assert!(!token_matches(Some("secret"), None));
+  }
+
+  #[test]
+  fn remote_work_response_can_exceed_setup_timeout() {
+    tokio::runtime::Builder::new_current_thread()
+      .enable_io()
+      .enable_time()
+      .build()
+      .unwrap()
+      .block_on(async {
+        let timeouts = RemoteTimeouts {
+          setup:         Duration::from_millis(25),
+          work_response: Duration::from_secs(5),
+        };
+        let response_delay = Duration::from_millis(100);
+        assert!(response_delay > timeouts.setup);
+        assert!(response_delay < timeouts.work_response);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        let client = TcpStream::connect(endpoint).await.unwrap();
+        let (server, _) = listener.accept().await.unwrap();
+        let mut worker = RemoteWorker {
+          label: "remote-test".into(),
+          stream: Some(client.compat()),
+          timeouts,
+        };
+        let (work_seen_tx, work_seen_rx) = tokio::sync::oneshot::channel();
+
+        let server = tokio::spawn(async move {
+          let mut stream = server.compat();
+          assert!(matches!(
+            remote_proto::read_client(&mut stream).await.unwrap(),
+            ClientMessage::Work(path) if path == vec!["slow".to_owned()]
+          ));
+          work_seen_tx.send(()).unwrap();
+          tokio::time::sleep(response_delay).await;
+          remote_proto::write_server(
+            &mut stream,
+            &ServerMessage::Event(Box::new(crate::Event::AttrSet {
+              attr:      "slow".into(),
+              attr_path: vec!["slow".into()],
+              attrs:     Vec::new(),
+            })),
+          )
+          .await
+          .unwrap();
+          remote_proto::write_server(
+            &mut stream,
+            &ServerMessage::Status(WorkerStatus::Ready),
+          )
+          .await
+          .unwrap();
+        });
+
+        let work =
+          tokio::spawn(async move { worker.work(&["slow".to_owned()]).await });
+        work_seen_rx.await.unwrap();
+
+        let event = work.await.unwrap().unwrap();
+        server.await.unwrap();
+        assert!(matches!(
+          event,
+          crate::Event::AttrSet { attr, .. } if attr == "slow"
+        ));
+      });
   }
 }

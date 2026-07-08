@@ -263,6 +263,7 @@ fn set_worker_config(
       .as_deref(),
   );
   builder.set_max_memory_size(config.max_memory_size as u64);
+  builder.set_item_timeout_seconds(config.item_timeout_seconds);
   builder.set_meta(config.meta);
   builder.set_show_input_drvs(config.show_input_drvs);
   set_pairs(
@@ -294,12 +295,21 @@ fn read_worker_config(
       .get_max_memory_size()
       .try_into()
       .context("maxMemorySize exceeds this platform's usize")?,
-    item_timeout_seconds: DEFAULT_ITEM_TIMEOUT_SECONDS,
+    item_timeout_seconds: read_item_timeout_seconds(reader),
     meta:                 reader.get_meta(),
     show_input_drvs:      reader.get_show_input_drvs(),
     override_inputs:      read_pairs(reader.get_override_inputs()?)?,
     nix_options:          read_pairs(reader.get_nix_options()?)?,
   })
+}
+
+fn read_item_timeout_seconds(
+  reader: worker_capnp::worker_config::Reader<'_>,
+) -> u64 {
+  match reader.get_item_timeout_seconds() {
+    0 => DEFAULT_ITEM_TIMEOUT_SECONDS,
+    seconds => seconds,
+  }
 }
 
 fn set_input(mut builder: worker_capnp::input::Builder<'_>, input: &Input) {
@@ -644,6 +654,36 @@ mod tests {
         let error = read_client(&mut bytes).await.unwrap_err().to_string();
 
         assert!(error.contains("unsupported worker protocol version"));
+      });
+  }
+
+  #[test]
+  fn setup_preserves_item_timeout_seconds() {
+    tokio::runtime::Builder::new_current_thread()
+      .enable_io()
+      .build()
+      .unwrap()
+      .block_on(async {
+        let mut config = WorkerConfig::from(&crate::Config::default());
+        config.item_timeout_seconds = 3_600;
+        let mut bytes = Cursor::new(Vec::new());
+
+        write_client(&mut bytes, &ClientMessage::Setup {
+          config,
+          token: None,
+          expected_store_dir: None,
+        })
+        .await
+        .unwrap();
+        bytes.set_position(0);
+
+        let ClientMessage::Setup { config, .. } =
+          read_client(&mut bytes).await.unwrap()
+        else {
+          panic!("expected setup");
+        };
+
+        assert_eq!(config.item_timeout_seconds, 3_600);
       });
   }
 
