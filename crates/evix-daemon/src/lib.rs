@@ -424,6 +424,11 @@ fn handle_connection(
         return Err(err);
       },
     };
+  if let Err(err) = request.validate_protocol() {
+    let message = err.to_string();
+    let _ = write_response(&mut stream, &Response::error(message));
+    return Err(anyhow::Error::new(err));
+  }
 
   let runtime = Builder::new_current_thread()
     .enable_io()
@@ -433,16 +438,16 @@ fn handle_connection(
 
   let result = runtime.block_on(async {
     match request {
-      Request::Eval { config } => {
+      Request::Eval { config, .. } => {
         handle_eval(&state, &mut stream, config).await
       },
-      Request::Watch { config } => {
+      Request::Watch { config, .. } => {
         handle_watch(&state, &mut stream, config).await
       },
-      Request::Query { config, filter } => {
+      Request::Query { config, filter, .. } => {
         handle_query(&state, &mut stream, config, filter).await
       },
-      Request::Diff { config } => {
+      Request::Diff { config, .. } => {
         handle_diff(&state, &mut stream, config).await
       },
     }
@@ -641,6 +646,42 @@ mod tests {
         .join()
         .unwrap()
         .contains("no warm session for requested config")
+    );
+  }
+
+  #[test]
+  fn mismatched_protocol_version_returns_protocol_error() {
+    let (mut client, server) = UnixStream::pair().unwrap();
+    let state = Arc::new(DaemonState::default());
+    let handle = thread::spawn(move || {
+      handle_connection(state, server).unwrap_err().to_string()
+    });
+
+    serde_json::to_writer(
+      &mut client,
+      &serde_json::json!({
+        "type": "query",
+        "protocolVersion": evix_protocol::DAEMON_PROTOCOL_VERSION + 1,
+        "config": Config::default(),
+      }),
+    )
+    .unwrap();
+    writeln!(client).unwrap();
+    client.flush().unwrap();
+
+    let mut line = String::new();
+    BufReader::new(client).read_line(&mut line).unwrap();
+    let response: Response = serde_json::from_str(line.trim()).unwrap();
+
+    let Response::Error { message } = response else {
+      panic!("expected error response");
+    };
+    assert!(message.contains("unsupported daemon protocol version"));
+    assert!(
+      handle
+        .join()
+        .unwrap()
+        .contains("unsupported daemon protocol version")
     );
   }
 

@@ -118,27 +118,12 @@ fn run_plan(plan: CommandPlan) -> Result<()> {
 
 fn daemon_request(request: Request) -> Result<Request> {
   Ok(match request {
-    Request::Eval { config } => {
-      Request::Eval {
-        config: daemon_config(config)?,
-      }
+    Request::Eval { config, .. } => Request::eval(&daemon_config(config)?),
+    Request::Watch { config, .. } => Request::watch(&daemon_config(config)?),
+    Request::Query { config, filter, .. } => {
+      Request::query(&daemon_config(config)?, &filter)
     },
-    Request::Watch { config } => {
-      Request::Watch {
-        config: daemon_config(config)?,
-      }
-    },
-    Request::Query { config, filter } => {
-      Request::Query {
-        config: daemon_config(config)?,
-        filter,
-      }
-    },
-    Request::Diff { config } => {
-      Request::Diff {
-        config: daemon_config(config)?,
-      }
-    },
+    Request::Diff { config, .. } => Request::diff(&daemon_config(config)?),
   })
 }
 
@@ -564,7 +549,7 @@ mod tests {
     let request = daemon_request(Request::eval(&Config::file("Cargo.toml")))
       .expect("daemon request");
 
-    let Request::Eval { config } = request else {
+    let Request::Eval { config, .. } = request else {
       panic!("expected eval request");
     };
     let Input::File(path) = config.input else {
@@ -580,7 +565,7 @@ mod tests {
     let request = daemon_request(Request::eval(&Config::flake(".#hydraJobs")))
       .expect("daemon request");
 
-    let Request::Eval { config } = request else {
+    let Request::Eval { config, .. } = request else {
       panic!("expected eval request");
     };
     let Input::Flake(reference) = config.input else {
