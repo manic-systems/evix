@@ -101,9 +101,42 @@ impl RemoteWorker {
     config: &WorkerConfig,
     label: impl Into<String>,
   ) -> Result<Self> {
+    Self::connect_with_store_dir(
+      endpoint,
+      token,
+      config,
+      label,
+      local_store_dir()?,
+    )
+    .await
+  }
+
+  #[cfg(test)]
+  pub(crate) async fn connect_for_test(
+    endpoint: &str,
+    token: Option<&str>,
+    config: &WorkerConfig,
+    label: impl Into<String>,
+  ) -> Result<Self> {
+    Self::connect_with_store_dir(
+      endpoint,
+      token,
+      config,
+      label,
+      "/nix/store".into(),
+    )
+    .await
+  }
+
+  async fn connect_with_store_dir(
+    endpoint: &str,
+    token: Option<&str>,
+    config: &WorkerConfig,
+    label: impl Into<String>,
+    expected_store_dir: String,
+  ) -> Result<Self> {
     let label = label.into();
     let timeouts = RemoteTimeouts::from_config(config);
-    let expected_store_dir = local_store_dir()?;
     debug!(worker = %label, endpoint = %endpoint, "connecting remote worker");
     let tcp = TcpStream::connect(endpoint).await.with_context(|| {
       format!("connecting remote worker {label} at {endpoint}")
@@ -322,6 +355,10 @@ fn validate_store_dir(expected: Option<&str>) -> Result<()> {
     return Ok(());
   };
   let actual = local_store_dir()?;
+  validate_store_dir_against(expected, &actual)
+}
+
+fn validate_store_dir_against(expected: &str, actual: &str) -> Result<()> {
   if actual != expected {
     bail!(
       "remote worker store dir mismatch: master uses {expected}, remote uses \
@@ -449,9 +486,10 @@ mod tests {
 
   #[test]
   fn store_dir_validation_rejects_mismatch() {
-    let error = validate_store_dir(Some("/not-the-local-store"))
-      .unwrap_err()
-      .to_string();
+    let error =
+      validate_store_dir_against("/not-the-local-store", "/nix/store")
+        .unwrap_err()
+        .to_string();
 
     assert!(error.contains("store dir mismatch"));
   }
