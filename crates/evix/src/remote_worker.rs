@@ -331,6 +331,11 @@ fn validate_store_dir(expected: Option<&str>) -> Result<()> {
   Ok(())
 }
 
+#[expect(
+  clippy::arc_with_non_send_sync,
+  reason = "nix-bindings store APIs take Arc<Context>; this synchronous \
+            helper does not move the context across thread boundaries"
+)]
 fn local_store_dir() -> Result<String> {
   let ctx = Arc::new(NixContext::new().context("Nix context")?);
   let store = Store::open(&ctx, None).context("Nix store")?;

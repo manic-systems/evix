@@ -1,4 +1,4 @@
-use std::{env, mem, path::Path, sync::Arc};
+use std::{env, mem::MaybeUninit, path::Path, sync::Arc};
 
 use anyhow::{Context as _, Result, bail};
 use nix_bindings::{Context, EvalState, EvalStateBuilder, Store, Value};
@@ -25,7 +25,11 @@ use crate::{
 /// then loops: receive an attribute path from the master, evaluate it, and
 /// write the resulting [`Event`] back to stdout. Exits when the master sends
 /// shutdown or when the memory limit is exceeded.
-#[allow(clippy::arc_with_non_send_sync)]
+#[expect(
+  clippy::arc_with_non_send_sync,
+  reason = "nix-bindings evaluation APIs require Arc-backed handles; worker \
+            state stays inside one worker subprocess task"
+)]
 pub async fn run() -> Result<()> {
   let stdin = tokio::io::stdin();
   let stdout = tokio::io::stdout();
@@ -72,9 +76,10 @@ pub async fn run() -> Result<()> {
     write_server(&mut writer, &ServerMessage::Event(Box::new(response)))
       .await?;
 
-    if should_restart(config.max_memory_size) {
+    let max_rss_kb = get_maxrss_kb().context("checking worker memory usage")?;
+    if should_restart(max_rss_kb, config.max_memory_size) {
       warn!(
-        max_rss_kb = get_maxrss_kb(),
+        max_rss_kb = max_rss_kb,
         "memory limit exceeded, worker restarting"
       );
       write_server(&mut writer, &ServerMessage::Status(WorkerStatus::Restart))
@@ -91,7 +96,6 @@ pub async fn run() -> Result<()> {
 
 /// Build a new [`EvalState`] from the given store, attaching flake settings
 /// when the input is a flake.
-#[allow(clippy::arc_with_non_send_sync)]
 fn build_eval_state(
   _ctx: &Arc<Context>,
   store: &Arc<Store>,
@@ -142,7 +146,11 @@ fn eval_root<'s>(
 /// Parse a flake reference, lock it (applying any input overrides), and return
 /// the locked flake's output attrs, optionally narrowed by a fragment.
 #[cfg(feature = "flake")]
-#[allow(clippy::arc_with_non_send_sync)]
+#[expect(
+  clippy::arc_with_non_send_sync,
+  reason = "nix-bindings flake APIs require Arc-backed context/settings \
+            handles that remain local to this evaluation"
+)]
 fn eval_flake<'s>(
   ctx: &Arc<Context>,
   state: &'s EvalState,
@@ -313,18 +321,29 @@ fn build_auto_args<'s>(
   Ok(Some(attrs))
 }
 
-fn should_restart(max_memory_mb: usize) -> bool {
-  get_maxrss_kb() > max_memory_mb * 1024
+fn should_restart(max_rss_kb: usize, max_memory_mb: usize) -> bool {
+  max_rss_kb > max_memory_mb.saturating_mul(1024)
 }
 
-fn get_maxrss_kb() -> usize {
-  let mut usage: libc::rusage = unsafe { mem::zeroed() };
-  unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
-  let rss = usage.ru_maxrss as usize;
+fn get_maxrss_kb() -> Result<usize> {
+  let mut usage = MaybeUninit::<libc::rusage>::uninit();
+  // SAFETY: `usage.as_mut_ptr()` is a valid, non-null pointer to writable
+  // storage for `libc::rusage`. `getrusage` fully initializes it on success,
+  // which is checked before `assume_init`.
+  let result =
+    unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) };
+  if result == -1 {
+    return Err(std::io::Error::last_os_error())
+      .context("getrusage(RUSAGE_SELF)");
+  }
+  // SAFETY: a successful `getrusage` call initializes the entire `rusage`.
+  let usage = unsafe { usage.assume_init() };
+  let rss = usize::try_from(usage.ru_maxrss)
+    .context("getrusage returned a negative ru_maxrss")?;
   if cfg!(target_os = "macos") {
-    rss / 1024
+    Ok(rss / 1024)
   } else {
-    rss
+    Ok(rss)
   }
 }
 
