@@ -94,6 +94,14 @@ If an `evixd` socket is available, `eval` uses it and stores a warm session for
 later `query` or `diff` calls. If the daemon is not running, `eval` falls back
 to local evaluation. Use `--no-daemon` to force local evaluation.
 
+> [!NOTE]
+> Local/path flakes are checked against their `flake.lock`. Non-local flake refs
+> are still locked virtually inside each worker, so Evix warns for those inputs;
+> use a local path flake with an up-to-date lock file when reproducible
+> multi-worker evaluation is important to you. Though, out-of-date lock files
+> are generally an issue so it's best that you consider resolving them with
+> upstream.
+
 ### `evix watch`
 
 Evaluate a local file or local flake, then emit a diff each time watched inputs
