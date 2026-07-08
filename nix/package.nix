@@ -3,13 +3,13 @@
   rustPlatform,
   glibc,
   nixVersions,
+  nixForBindings ? nixVersions.nix_2_34,
   capnproto,
   pkg-config,
   rustc,
 }: let
   inherit (rustc) llvmPackages;
   workspace = lib.importTOML ../Cargo.toml;
-  nixForBindings = nixVersions.nix_2_34;
 in
   rustPlatform.buildRustPackage (finalAttrs: {
     pname = "evix";
@@ -28,7 +28,7 @@ in
         ];
       };
 
-    cargoLock.lockFile = "${finalAttrs.src}/Cargo.lock";
+    cargoLock.lockFile = ../Cargo.lock;
     cargoBuildFlags = ["-p" "evix-cli" "-p" "evix-daemon"];
     cargoTestFlags =
       ["-p" "evix" "-p" "evix-cli" "-p" "evix-daemon" "--lib" "--bins"];

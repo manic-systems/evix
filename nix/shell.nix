@@ -10,6 +10,7 @@
   pkg-config,
   capnproto,
   nixVersions,
+  nixForBindings ? nixVersions.nix_2_34,
   glibc,
   cargo-nextest,
   jq,
@@ -17,7 +18,6 @@
   nix-eval-jobs,
 }: let
   inherit (rustc) llvmPackages;
-  nixForBindings = nixVersions.nix_2_34;
 in
   mkShell {
     name = "evix";
