@@ -279,6 +279,10 @@ fn set_worker_config(
       .init_nix_options(list_len(config.nix_options.len(), "nix options")?),
     &config.nix_options,
   )?;
+  set_text_opt(
+    builder.reborrow().init_locked_flake_json(),
+    config.locked_flake_json.as_deref(),
+  );
   Ok(())
 }
 
@@ -300,6 +304,7 @@ fn read_worker_config(
     show_input_drvs:      reader.get_show_input_drvs(),
     override_inputs:      read_pairs(reader.get_override_inputs()?)?,
     nix_options:          read_pairs(reader.get_nix_options()?)?,
+    locked_flake_json:    read_text_opt(reader.get_locked_flake_json()?)?,
   })
 }
 
@@ -666,6 +671,7 @@ mod tests {
       .block_on(async {
         let mut config = WorkerConfig::from(&crate::Config::default());
         config.item_timeout_seconds = 3_600;
+        config.locked_flake_json = Some(r#"{"lockFile":{}}"#.into());
         let mut bytes = Cursor::new(Vec::new());
 
         write_client(&mut bytes, &ClientMessage::Setup {
@@ -684,6 +690,10 @@ mod tests {
         };
 
         assert_eq!(config.item_timeout_seconds, 3_600);
+        assert_eq!(
+          config.locked_flake_json.as_deref(),
+          Some(r#"{"lockFile":{}}"#)
+        );
       });
   }
 

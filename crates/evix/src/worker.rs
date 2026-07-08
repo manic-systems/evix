@@ -8,6 +8,7 @@ use tracing::{debug, trace, warn};
 
 use crate::{
   AutoArg,
+  Config,
   Input,
   remote_proto::{
     ClientMessage,
@@ -128,7 +129,13 @@ fn eval_root<'s>(
 ) -> Result<Value<'s>> {
   match &config.input {
     Input::Flake(flake_ref) => {
-      eval_flake(ctx, state, flake_ref, &config.override_inputs)
+      eval_flake(
+        ctx,
+        state,
+        flake_ref,
+        &config.override_inputs,
+        config.locked_flake_json.as_deref(),
+      )
     },
     Input::Expr(expr) => {
       let v = state
@@ -146,39 +153,19 @@ fn eval_root<'s>(
 /// Parse a flake reference, lock it (applying any input overrides), and return
 /// the locked flake's output attrs, optionally narrowed by a fragment.
 #[cfg(feature = "flake")]
-#[expect(
-  clippy::arc_with_non_send_sync,
-  reason = "nix-bindings flake APIs require Arc-backed context/settings \
-            handles that remain local to this evaluation"
-)]
 fn eval_flake<'s>(
   ctx: &Arc<Context>,
   state: &'s EvalState,
   flake_ref_str: &str,
   override_inputs: &[(String, String)],
+  locked_flake_json: Option<&str>,
 ) -> Result<Value<'s>> {
-  use nix_bindings::flake::{
-    FetchersSettings,
-    FlakeReference,
-    FlakeReferenceParseFlags,
-    LockFlags,
-    LockedFlake,
-  };
+  use nix_bindings::flake::{FetchersSettings, ImportedLockedFlake};
 
-  let flake_settings = Arc::new(
-    nix_bindings::flake::FlakeSettings::new(ctx).context("flake settings")?,
-  );
+  let flake_settings = flake_settings(ctx)?;
   let fetchers = FetchersSettings::new(ctx).context("fetcher settings")?;
-  let base_dir =
-    env::current_dir().context("resolving flake base directory")?;
-  let parse_flags = FlakeReferenceParseFlags::new(ctx, &flake_settings)
-    .context("parse flags")?
-    .set_base_directory(&base_dir.to_string_lossy())
-    .with_context(|| {
-      format!("setting flake base directory {}", base_dir.display())
-    })?;
-
-  let (flake_ref, fragment) = FlakeReference::parse(
+  let parse_flags = flake_parse_flags(ctx, &flake_settings)?;
+  let (flake_ref, fragment) = parse_flake_ref(
     ctx,
     &fetchers,
     &flake_settings,
@@ -187,42 +174,25 @@ fn eval_flake<'s>(
   )
   .context("parsing flake reference")?;
 
-  let local_flake = is_local_flake_reference(flake_ref_str);
-  let mut lock_flags = LockFlags::new(ctx, &flake_settings)
-    .context("lock flags")?
-    .set_mode(flake_lock_mode(local_flake))
-    .context("setting lock mode")?;
-  for (name, value) in override_inputs {
-    let (override_ref, _fragment) = FlakeReference::parse(
-      ctx,
-      &fetchers,
-      &flake_settings,
-      &parse_flags,
-      value,
-    )
-    .with_context(|| {
-      format!("parsing --override-input {name} reference {value:?}")
-    })?;
-    lock_flags = lock_flags
-      .add_input_override(name, &override_ref)
-      .with_context(|| format!("applying --override-input {name}"))?;
-  }
-  let locked = LockedFlake::lock(
-    ctx,
-    &fetchers,
-    &flake_settings,
-    state,
-    &lock_flags,
-    &flake_ref,
-  )
-  .context(if local_flake {
-    "locking local flake with an up-to-date flake.lock"
+  let outputs = if let Some(json) = locked_flake_json {
+    let imported = ImportedLockedFlake::import_json(ctx, &fetchers, json)
+      .context("importing locked flake graph")?;
+    imported
+      .output_attrs(&flake_settings, state)
+      .context("flake outputs")
   } else {
-    "locking flake"
-  })?;
-  let outputs = locked
-    .output_attrs(&flake_settings, state)
-    .context("flake outputs")?;
+    let env = FlakeEnv {
+      ctx,
+      fetchers: &fetchers,
+      settings: &flake_settings,
+      parse_flags: &parse_flags,
+    };
+    let locked =
+      lock_flake(&env, state, flake_ref_str, override_inputs, &flake_ref)?;
+    locked
+      .output_attrs(&flake_settings, state)
+      .context("flake outputs")
+  }?;
 
   if fragment.is_empty() {
     return Ok(outputs);
@@ -241,6 +211,152 @@ fn eval_flake<'s>(
     current = next;
   }
   Ok(current)
+}
+
+#[cfg(feature = "flake")]
+#[expect(
+  clippy::arc_with_non_send_sync,
+  reason = "nix-bindings lock/export APIs require Arc-backed context and \
+            store handles; this blocking helper keeps them on one thread"
+)]
+pub(crate) fn export_locked_flake(config: &Config) -> Result<Option<String>> {
+  let Input::Flake(flake_ref_str) = &config.input else {
+    return Ok(None);
+  };
+
+  let ctx = Arc::new(Context::new().context("Nix context")?);
+  let store = Arc::new(Store::open(&ctx, None).context("Nix store")?);
+  let state = build_eval_state(&ctx, &store, &WorkerConfig::from(config))?;
+
+  let flake_settings = flake_settings(&ctx)?;
+  let fetchers = nix_bindings::flake::FetchersSettings::new(&ctx)
+    .context("fetcher settings")?;
+  let parse_flags = flake_parse_flags(&ctx, &flake_settings)?;
+  let (flake_ref, _fragment) = parse_flake_ref(
+    &ctx,
+    &fetchers,
+    &flake_settings,
+    &parse_flags,
+    flake_ref_str,
+  )
+  .context("parsing flake reference")?;
+  let env = FlakeEnv {
+    ctx:         &ctx,
+    fetchers:    &fetchers,
+    settings:    &flake_settings,
+    parse_flags: &parse_flags,
+  };
+  let locked = lock_flake(
+    &env,
+    &state,
+    flake_ref_str,
+    &config.override_inputs,
+    &flake_ref,
+  )?;
+
+  locked
+    .export_json()
+    .map(Some)
+    .context("exporting locked flake graph")
+}
+
+#[cfg(feature = "flake")]
+struct FlakeEnv<'a> {
+  ctx:         &'a Arc<Context>,
+  fetchers:    &'a nix_bindings::flake::FetchersSettings,
+  settings:    &'a Arc<nix_bindings::flake::FlakeSettings>,
+  parse_flags: &'a nix_bindings::flake::FlakeReferenceParseFlags,
+}
+
+#[cfg(feature = "flake")]
+#[expect(
+  clippy::arc_with_non_send_sync,
+  reason = "nix-bindings flake APIs require Arc-backed settings handles; \
+            callers keep them local to one evaluation"
+)]
+fn flake_settings(
+  ctx: &Arc<Context>,
+) -> Result<Arc<nix_bindings::flake::FlakeSettings>> {
+  Ok(Arc::new(
+    nix_bindings::flake::FlakeSettings::new(ctx).context("flake settings")?,
+  ))
+}
+
+#[cfg(feature = "flake")]
+fn flake_parse_flags(
+  ctx: &Arc<Context>,
+  flake_settings: &Arc<nix_bindings::flake::FlakeSettings>,
+) -> Result<nix_bindings::flake::FlakeReferenceParseFlags> {
+  let base_dir =
+    env::current_dir().context("resolving flake base directory")?;
+  nix_bindings::flake::FlakeReferenceParseFlags::new(ctx, flake_settings)
+    .context("parse flags")?
+    .set_base_directory(&base_dir.to_string_lossy())
+    .with_context(|| {
+      format!("setting flake base directory {}", base_dir.display())
+    })
+}
+
+#[cfg(feature = "flake")]
+fn parse_flake_ref(
+  ctx: &Arc<Context>,
+  fetchers: &nix_bindings::flake::FetchersSettings,
+  flake_settings: &Arc<nix_bindings::flake::FlakeSettings>,
+  parse_flags: &nix_bindings::flake::FlakeReferenceParseFlags,
+  flake_ref: &str,
+) -> Result<(nix_bindings::flake::FlakeReference, String)> {
+  Ok(nix_bindings::flake::FlakeReference::parse(
+    ctx,
+    fetchers,
+    flake_settings,
+    parse_flags,
+    flake_ref,
+  )?)
+}
+
+#[cfg(feature = "flake")]
+fn lock_flake(
+  env: &FlakeEnv<'_>,
+  state: &EvalState,
+  flake_ref_str: &str,
+  override_inputs: &[(String, String)],
+  flake_ref: &nix_bindings::flake::FlakeReference,
+) -> Result<nix_bindings::flake::LockedFlake> {
+  let local_flake = is_local_flake_reference(flake_ref_str);
+  let mut lock_flags =
+    nix_bindings::flake::LockFlags::new(env.ctx, env.settings)
+      .context("lock flags")?
+      .set_mode(flake_lock_mode(local_flake))
+      .context("setting lock mode")?;
+  for (name, value) in override_inputs {
+    let (override_ref, _fragment) = parse_flake_ref(
+      env.ctx,
+      env.fetchers,
+      env.settings,
+      env.parse_flags,
+      value,
+    )
+    .with_context(|| {
+      format!("parsing --override-input {name} reference {value:?}")
+    })?;
+    lock_flags = lock_flags
+      .add_input_override(name, &override_ref)
+      .with_context(|| format!("applying --override-input {name}"))?;
+  }
+
+  nix_bindings::flake::LockedFlake::lock(
+    env.ctx,
+    env.fetchers,
+    env.settings,
+    state,
+    &lock_flags,
+    flake_ref,
+  )
+  .context(if local_flake {
+    "locking local flake with an up-to-date flake.lock"
+  } else {
+    "locking flake"
+  })
 }
 
 #[cfg(feature = "flake")]

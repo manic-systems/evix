@@ -161,19 +161,6 @@ fn config_rejects_zero_item_timeout() {
   assert!(error.contains("item timeout"));
 }
 
-#[cfg(feature = "flake")]
-#[test]
-fn virtual_flake_locking_warning_classifies_flake_inputs() {
-  assert!(uses_virtual_flake_locking(&Config::flake(
-    "github:NixOS/nixpkgs#hello"
-  )));
-  assert!(!uses_virtual_flake_locking(&Config::flake(".#hydraJobs")));
-  assert!(!uses_virtual_flake_locking(&Config::flake(
-    "path:/tmp/evix-fixture#hydraJobs"
-  )));
-  assert!(!uses_virtual_flake_locking(&Config::expr("{}")));
-}
-
 #[test]
 fn worker_failure_becomes_non_fatal_attribute_error() {
   let worker = local_worker(0);

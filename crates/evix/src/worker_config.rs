@@ -27,6 +27,8 @@ pub(crate) struct WorkerConfig {
   pub(crate) override_inputs:      Vec<(String, String)>,
   #[serde(default)]
   pub(crate) nix_options:          Vec<(String, String)>,
+  #[serde(default)]
+  pub(crate) locked_flake_json:    Option<String>,
 }
 
 impl From<&Config> for WorkerConfig {
@@ -42,6 +44,7 @@ impl From<&Config> for WorkerConfig {
       show_input_drvs:      config.show_input_drvs,
       override_inputs:      config.override_inputs.clone(),
       nix_options:          config.nix_options.clone(),
+      locked_flake_json:    None,
     }
   }
 }
