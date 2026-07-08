@@ -636,22 +636,30 @@ fn pairs(values: Vec<Pair>) -> Vec<(String, String)> {
 }
 
 fn filter(systems: Vec<String>, prefixes: Vec<String>) -> Filter {
+  let attr_prefixes = prefixes
+    .into_iter()
+    .map(split_attr_prefix)
+    .collect::<Vec<_>>();
+  let (attr_prefix, attr_prefixes) = match attr_prefixes.as_slice() {
+    [] => (None, None),
+    [prefix] => (Some(prefix.clone()), None),
+    _ => (None, Some(attr_prefixes)),
+  };
+
   Filter {
     systems: (!systems.is_empty()).then_some(systems),
-    attr_prefix: (!prefixes.is_empty()).then(|| {
-      prefixes
-        .into_iter()
-        .flat_map(|prefix| {
-          prefix
-            .split('.')
-            .filter(|part| !part.is_empty())
-            .map(str::to_owned)
-            .collect::<Vec<_>>()
-        })
-        .collect()
-    }),
+    attr_prefix,
+    attr_prefixes,
     ..Filter::default()
   }
+}
+
+fn split_attr_prefix(prefix: String) -> Vec<String> {
+  prefix
+    .split('.')
+    .filter(|part| !part.is_empty())
+    .map(str::to_owned)
+    .collect()
 }
 
 fn normalize_args<I, S>(args: I) -> Result<Vec<String>>
@@ -901,6 +909,51 @@ mod tests {
     };
 
     assert!(error.contains("watch requires --flake or --file input"));
+  }
+
+  #[test]
+  fn query_single_attr_prefix_uses_legacy_filter_field() {
+    let (_, CommandPlan::Query { filter, .. }) = parse_plan_from([
+      "query",
+      "--expr",
+      "{}",
+      "--attr-prefix",
+      "hydraJobs.release",
+    ])
+    .expect("parse query plan") else {
+      panic!("expected query command");
+    };
+
+    assert_eq!(
+      filter.attr_prefix,
+      Some(vec!["hydraJobs".to_owned(), "release".to_owned()])
+    );
+    assert_eq!(filter.attr_prefixes, None);
+  }
+
+  #[test]
+  fn query_repeated_attr_prefix_uses_structured_filter_field() {
+    let (_, CommandPlan::Query { filter, .. }) = parse_plan_from([
+      "query",
+      "--expr",
+      "{}",
+      "--attr-prefix",
+      "packages.x86_64-linux",
+      "--attr-prefix",
+      "hydraJobs.release",
+    ])
+    .expect("parse query plan") else {
+      panic!("expected query command");
+    };
+
+    assert_eq!(filter.attr_prefix, None);
+    assert_eq!(
+      filter.attr_prefixes,
+      Some(vec![
+        vec!["packages".to_owned(), "x86_64-linux".to_owned()],
+        vec!["hydraJobs".to_owned(), "release".to_owned()],
+      ])
+    );
   }
 
   #[test]
