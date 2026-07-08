@@ -15,6 +15,8 @@ use crate::{
   worker_process::WorkerStatus,
 };
 
+pub(crate) const WORKER_PROTOCOL_VERSION: u32 = 1;
+
 #[derive(Debug)]
 pub(crate) enum ClientMessage {
   Setup {
@@ -57,6 +59,7 @@ where
           setup.reborrow().init_expected_store_dir(),
           expected_store_dir.as_deref(),
         );
+        setup.set_protocol_version(WORKER_PROTOCOL_VERSION);
       },
       ClientMessage::Work(path) => {
         set_text_list(
@@ -86,6 +89,7 @@ where
   match root.which()? {
     worker_capnp::client_message::Which::Setup(setup) => {
       let setup = setup?;
+      validate_worker_protocol(setup.get_protocol_version())?;
       Ok(ClientMessage::Setup {
         config:             read_worker_config(setup.get_config()?)?,
         token:              read_text_opt(setup.get_token()?)?,
@@ -98,6 +102,18 @@ where
     worker_capnp::client_message::Which::Shutdown(()) => {
       Ok(ClientMessage::Shutdown)
     },
+  }
+}
+
+fn validate_worker_protocol(actual: u32) -> Result<()> {
+  if actual == WORKER_PROTOCOL_VERSION {
+    Ok(())
+  } else {
+    bail!(
+      "unsupported worker protocol version {}; expected {}",
+      actual,
+      WORKER_PROTOCOL_VERSION
+    )
   }
 }
 
@@ -523,4 +539,37 @@ fn read_text_list(reader: capnp::text_list::Reader<'_>) -> Result<Vec<String>> {
     out.push(reader.get(index)?.to_string()?);
   }
   Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+  use capnp::message::Builder;
+  use futures_util::io::Cursor;
+
+  use super::*;
+
+  #[test]
+  fn setup_rejects_mismatched_protocol_version() {
+    tokio::runtime::Builder::new_current_thread()
+      .enable_io()
+      .build()
+      .unwrap()
+      .block_on(async {
+        let mut message = Builder::new_default();
+        message
+          .init_root::<worker_capnp::client_message::Builder>()
+          .init_setup()
+          .set_protocol_version(WORKER_PROTOCOL_VERSION + 1);
+
+        let mut bytes = Cursor::new(Vec::new());
+        capnp_futures::serialize::write_message(&mut bytes, &message)
+          .await
+          .unwrap();
+        bytes.set_position(0);
+
+        let error = read_client(&mut bytes).await.unwrap_err().to_string();
+
+        assert!(error.contains("unsupported worker protocol version"));
+      });
+  }
 }

@@ -12,6 +12,7 @@ struct Setup {
   config @0 :WorkerConfig;
   token @1 :TextOpt;
   expectedStoreDir @2 :TextOpt;
+  protocolVersion @3 :UInt32;
 }
 
 struct Work {
