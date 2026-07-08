@@ -235,7 +235,7 @@ fn remote_worker_abort_drops_connection_without_shutdown() {
 
       let config = WorkerConfig::from(&Config::default());
       let remote =
-        RemoteWorker::connect(&endpoint, None, &config, "remote-test")
+        RemoteWorker::connect_for_test(&endpoint, None, &config, "remote-test")
           .await
           .unwrap();
       let mut client = WorkerClient::Remote(remote);
