@@ -24,7 +24,7 @@ pub enum AutoArg {
   Str(String),
 }
 
-/// Configuration for an evaluation run.
+/// Configuration carried by daemon protocol requests.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Config {
@@ -57,9 +57,6 @@ pub struct Config {
   /// Remote worker endpoints available to the master.
   #[serde(default)]
   pub remotes:              Vec<Remote>,
-  /// Worker executable used for local worker subprocesses.
-  #[serde(skip)]
-  pub worker_exe:           Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -77,7 +74,6 @@ impl Default for Config {
       override_inputs:      Vec::new(),
       nix_options:          Vec::new(),
       remotes:              Vec::new(),
-      worker_exe:           None,
     }
   }
 }
@@ -217,13 +213,6 @@ impl ConfigBuilder {
 
   pub fn remote(mut self, remote: Remote) -> Self {
     self.config.remotes.push(remote);
-    self
-  }
-
-  /// Use a dedicated executable for local worker subprocesses instead of
-  /// re-executing the embedding process.
-  pub fn worker_exe(mut self, path: impl Into<PathBuf>) -> Self {
-    self.config.worker_exe = Some(path.into());
     self
   }
 

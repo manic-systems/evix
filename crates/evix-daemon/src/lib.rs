@@ -1,5 +1,4 @@
 use std::{
-  collections::{HashMap, VecDeque},
   env,
   fs::{self, OpenOptions},
   io::{BufRead, BufReader, Write},
@@ -14,126 +13,29 @@ use std::{
   process,
   sync::{
     Arc,
-    Mutex,
     atomic::{AtomicBool, AtomicI32, Ordering},
   },
   thread,
 };
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use evix::{Config, Filter, Session};
+use evix::{Config, Filter};
 use evix_protocol::{Request, Response};
 use futures_util::StreamExt as _;
-use tokio::runtime::Builder;
+use tokio::runtime::{Builder, Handle};
 use tracing::{error, info};
 
+mod connection_limit;
+mod session_cache;
+
+use connection_limit::ConnectionLimiter;
+use session_cache::DaemonState;
+
 const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
-const MAX_SESSIONS: usize = 32;
 const MAX_CONNECTIONS: usize = 64;
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 static SHUTDOWN_SIGNAL_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
-
-#[derive(Default)]
-struct DaemonState {
-  sessions: Mutex<SessionRegistry<Arc<Session>>>,
-}
-
-impl DaemonState {
-  async fn replace_session(&self, config: Config) -> Result<Arc<Session>> {
-    let key = session_key(&config)?;
-    let session = Arc::new(Session::open(config).await?);
-    self
-      .sessions
-      .lock()
-      .expect("daemon session registry poisoned")
-      .insert(key, Arc::clone(&session));
-    Ok(session)
-  }
-
-  fn warm_session(&self, config: &Config) -> Result<Arc<Session>> {
-    let key = session_key(config)?;
-    let mut sessions = self
-      .sessions
-      .lock()
-      .expect("daemon session registry poisoned");
-    sessions.get(&key).ok_or_else(|| {
-      anyhow::anyhow!(
-        "no warm session for requested evaluation input; query/diff reuse a \
-         session only when input, args, --force-recurse, --override-input, \
-         and --option values match a completed eval or watch"
-      )
-    })
-  }
-}
-
-struct SessionRegistry<T> {
-  sessions: HashMap<String, T>,
-  order:    VecDeque<String>,
-  max:      usize,
-}
-
-impl<T> Default for SessionRegistry<T> {
-  fn default() -> Self {
-    Self::new(MAX_SESSIONS)
-  }
-}
-
-impl<T> SessionRegistry<T> {
-  fn new(max: usize) -> Self {
-    Self {
-      sessions: HashMap::new(),
-      order: VecDeque::new(),
-      max,
-    }
-  }
-
-  fn insert(&mut self, key: String, value: T) {
-    self.remove_order_entry(&key);
-    while self.sessions.len() >= self.max {
-      let Some(oldest) = self.order.pop_front() else {
-        break;
-      };
-      self.sessions.remove(&oldest);
-    }
-    self.order.push_back(key.clone());
-    self.sessions.insert(key, value);
-  }
-
-  fn remove_order_entry(&mut self, key: &str) {
-    if let Some(index) = self.order.iter().position(|item| item == key) {
-      self.order.remove(index);
-    }
-  }
-}
-
-impl<T: Clone> SessionRegistry<T> {
-  fn get(&mut self, key: &str) -> Option<T> {
-    let value = self.sessions.get(key).cloned()?;
-    self.remove_order_entry(key);
-    self.order.push_back(key.to_owned());
-    Some(value)
-  }
-}
-
-fn session_key(config: &Config) -> Result<String> {
-  serde_json::to_string(&session_key_config(config))
-    .context("serializing session key")
-}
-
-fn session_key_config(config: &Config) -> Config {
-  let defaults = Config::default();
-  let mut key = config.clone();
-  key.gc_roots_dir = None;
-  key.workers = defaults.workers;
-  key.max_memory_size = defaults.max_memory_size;
-  key.item_timeout_seconds = defaults.item_timeout_seconds;
-  key.meta = false;
-  key.show_input_drvs = false;
-  key.remotes.clear();
-  key.worker_exe = None;
-  key
-}
 
 pub fn default_socket_path() -> PathBuf {
   let uid = unsafe { libc::geteuid() };
@@ -161,8 +63,13 @@ pub fn run(socket: PathBuf, foreground: bool) -> Result<()> {
   let shutdown = ShutdownSignals::install()?;
   let state = Arc::new(DaemonState::default());
   let connections = Arc::new(ConnectionLimiter::new(MAX_CONNECTIONS));
+  let runtime = Builder::new_multi_thread()
+    .enable_io()
+    .enable_time()
+    .build()
+    .context("building daemon runtime")?;
 
-  serve_connections(listener, state, connections, &shutdown)?;
+  serve_connections(listener, state, connections, &shutdown, runtime.handle())?;
 
   Ok(())
 }
@@ -172,6 +79,7 @@ fn serve_connections(
   state: Arc<DaemonState>,
   connections: Arc<ConnectionLimiter>,
   shutdown: &ShutdownSignals,
+  runtime: &Handle,
 ) -> Result<()> {
   while !SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
     if wait_for_connection_or_shutdown(&listener, shutdown)? {
@@ -188,9 +96,10 @@ fn serve_connections(
           continue;
         };
         let state = Arc::clone(&state);
+        let runtime = runtime.clone();
         thread::spawn(move || {
           let _slot = slot;
-          if let Err(err) = handle_connection(state, stream) {
+          if let Err(err) = handle_connection(state, stream, runtime) {
             error!(error = %err, "daemon connection failed");
           }
         });
@@ -242,35 +151,6 @@ fn wait_for_connection_or_shutdown(
   )
 }
 
-struct ConnectionLimiter {
-  active: Mutex<usize>,
-  max:    usize,
-}
-
-impl ConnectionLimiter {
-  fn new(max: usize) -> Self {
-    Self {
-      active: Mutex::new(0),
-      max,
-    }
-  }
-
-  fn acquire(self: &Arc<Self>) -> Option<ConnectionSlot> {
-    let mut active = self.active.lock().expect("connection limit poisoned");
-    if *active >= self.max {
-      return None;
-    }
-    *active += 1;
-    Some(ConnectionSlot {
-      limiter: Arc::clone(self),
-    })
-  }
-}
-
-struct ConnectionSlot {
-  limiter: Arc<ConnectionLimiter>,
-}
-
 struct UmaskGuard(libc::mode_t);
 
 impl UmaskGuard {
@@ -287,17 +167,6 @@ impl Drop for UmaskGuard {
     unsafe {
       libc::umask(self.0);
     }
-  }
-}
-
-impl Drop for ConnectionSlot {
-  fn drop(&mut self) {
-    let mut active = self
-      .limiter
-      .active
-      .lock()
-      .expect("connection limit poisoned");
-    *active -= 1;
   }
 }
 
@@ -723,6 +592,7 @@ fn pid_path() -> PathBuf {
 fn handle_connection(
   state: Arc<DaemonState>,
   mut stream: UnixStream,
+  runtime: Handle,
 ) -> Result<()> {
   authorize_peer(&stream)?;
   let line = match read_request_line(&stream) {
@@ -750,25 +620,19 @@ fn handle_connection(
     return Err(anyhow::Error::new(err));
   }
 
-  let runtime = Builder::new_current_thread()
-    .enable_io()
-    .enable_time()
-    .build()
-    .context("building daemon request runtime")?;
-
   let result = runtime.block_on(async {
     match request {
       Request::Eval { config, .. } => {
-        handle_eval(&state, &mut stream, config).await
+        handle_eval(&state, &mut stream, config.into()).await
       },
       Request::Watch { config, .. } => {
-        handle_watch(&state, &mut stream, config).await
+        handle_watch(&state, &mut stream, config.into()).await
       },
       Request::Query { config, filter, .. } => {
-        handle_query(&state, &mut stream, config, filter).await
+        handle_query(&state, &mut stream, config.into(), filter).await
       },
       Request::Diff { config, .. } => {
-        handle_diff(&state, &mut stream, config).await
+        handle_diff(&state, &mut stream, config.into()).await
       },
     }
   });
@@ -928,408 +792,4 @@ fn write_response(stream: &mut UnixStream, response: &Response) -> Result<()> {
   Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-  use std::{
-    io::Cursor,
-    time::{SystemTime, UNIX_EPOCH},
-  };
-
-  use super::*;
-
-  #[test]
-  fn missing_warm_session_returns_protocol_error() {
-    let (mut client, server) = UnixStream::pair().unwrap();
-    let state = Arc::new(DaemonState::default());
-    let handle = thread::spawn(move || {
-      handle_connection(state, server).unwrap_err().to_string()
-    });
-
-    serde_json::to_writer(
-      &mut client,
-      &Request::query(&Config::default(), &Filter::default()),
-    )
-    .unwrap();
-    writeln!(client).unwrap();
-    client.flush().unwrap();
-
-    let mut line = String::new();
-    BufReader::new(client).read_line(&mut line).unwrap();
-    let response: Response = serde_json::from_str(line.trim()).unwrap();
-
-    let Response::Error { message } = response else {
-      panic!("expected error response");
-    };
-    assert!(message.contains("no warm session for requested evaluation input"));
-    assert!(
-      handle
-        .join()
-        .unwrap()
-        .contains("no warm session for requested evaluation input")
-    );
-  }
-
-  #[test]
-  fn mismatched_protocol_version_returns_protocol_error() {
-    let (mut client, server) = UnixStream::pair().unwrap();
-    let state = Arc::new(DaemonState::default());
-    let handle = thread::spawn(move || {
-      handle_connection(state, server).unwrap_err().to_string()
-    });
-
-    serde_json::to_writer(
-      &mut client,
-      &serde_json::json!({
-        "type": "query",
-        "protocolVersion": evix_protocol::DAEMON_PROTOCOL_VERSION + 1,
-        "config": Config::default(),
-      }),
-    )
-    .unwrap();
-    writeln!(client).unwrap();
-    client.flush().unwrap();
-
-    let mut line = String::new();
-    BufReader::new(client).read_line(&mut line).unwrap();
-    let response: Response = serde_json::from_str(line.trim()).unwrap();
-
-    let Response::Error { message } = response else {
-      panic!("expected error response");
-    };
-    assert!(message.contains("unsupported daemon protocol version"));
-    assert!(
-      handle
-        .join()
-        .unwrap()
-        .contains("unsupported daemon protocol version")
-    );
-  }
-
-  #[test]
-  fn session_registry_evicts_least_recently_used_entry() {
-    let mut registry = SessionRegistry::new(2);
-    registry.insert("a".into(), 1);
-    registry.insert("b".into(), 2);
-    assert_eq!(registry.get("a"), Some(1));
-
-    registry.insert("c".into(), 3);
-
-    assert_eq!(registry.get("b"), None);
-    assert_eq!(registry.get("a"), Some(1));
-    assert_eq!(registry.get("c"), Some(3));
-  }
-
-  #[test]
-  fn connection_limiter_releases_slots_on_drop() {
-    let limiter = Arc::new(ConnectionLimiter::new(1));
-    let slot = limiter.acquire().expect("first slot");
-
-    assert!(limiter.acquire().is_none());
-
-    drop(slot);
-
-    assert!(limiter.acquire().is_some());
-  }
-
-  #[test]
-  fn session_key_ignores_runtime_and_output_fields() {
-    let mut base = Config::expr("{ recurseForDerivations = true; }");
-    base
-      .auto_args
-      .push(("name".into(), evix::AutoArg::Str("value".into())));
-    base.force_recurse = true;
-    base
-      .override_inputs
-      .push(("nixpkgs".into(), "github:NixOS/nixpkgs".into()));
-    base
-      .nix_options
-      .push(("extra-experimental-features".into(), "flakes".into()));
-
-    let mut variant = base.clone();
-    variant.gc_roots_dir = Some("/nix/var/nix/gcroots/evix".into());
-    variant.workers = 16;
-    variant.max_memory_size = 8192;
-    variant.item_timeout_seconds = 7;
-    variant.meta = true;
-    variant.show_input_drvs = true;
-    variant.remotes.push(evix::Remote {
-      endpoint: "127.0.0.1:7357".into(),
-      systems:  vec!["x86_64-linux".into()],
-      workers:  4,
-      token:    Some("secret".into()),
-    });
-    variant.worker_exe = Some("/bin/evix-worker".into());
-
-    assert_eq!(session_key(&base).unwrap(), session_key(&variant).unwrap());
-  }
-
-  #[test]
-  fn session_key_keeps_evaluation_fields() {
-    let base = Config::expr("{}");
-
-    let mut different_input = base.clone();
-    different_input.input = evix::Input::Expr("{ changed = true; }".into());
-
-    let mut different_arg = base.clone();
-    different_arg
-      .auto_args
-      .push(("name".into(), evix::AutoArg::Str("value".into())));
-
-    let mut different_recurse = base.clone();
-    different_recurse.force_recurse = true;
-
-    let mut different_override = base.clone();
-    different_override
-      .override_inputs
-      .push(("nixpkgs".into(), "github:NixOS/nixpkgs".into()));
-
-    let mut different_option = base.clone();
-    different_option
-      .nix_options
-      .push(("accept-flake-config".into(), "true".into()));
-
-    let base_key = session_key(&base).unwrap();
-    for config in [
-      different_input,
-      different_arg,
-      different_recurse,
-      different_override,
-      different_option,
-    ] {
-      assert_ne!(base_key, session_key(&config).unwrap());
-    }
-  }
-
-  #[test]
-  fn warm_session_matches_runtime_field_variants() {
-    let runtime = Builder::new_current_thread().build().unwrap();
-    let state = DaemonState::default();
-    let base = Config::expr("{}");
-    let session =
-      Arc::new(runtime.block_on(Session::open(base.clone())).unwrap());
-    state
-      .sessions
-      .lock()
-      .expect("daemon session registry poisoned")
-      .insert(session_key(&base).unwrap(), Arc::clone(&session));
-
-    let mut query_config = base.clone();
-    query_config.workers = 8;
-    query_config.meta = true;
-
-    assert!(Arc::ptr_eq(
-      &state.warm_session(&query_config).unwrap(),
-      &session
-    ));
-  }
-
-  #[test]
-  fn missing_warm_session_names_matching_fields() {
-    let state = DaemonState::default();
-
-    let error = state
-      .warm_session(&Config::expr("{}"))
-      .err()
-      .expect("missing warm session must fail")
-      .to_string();
-
-    assert!(error.contains("input"));
-    assert!(error.contains("--force-recurse"));
-    assert!(error.contains("--override-input"));
-    assert!(error.contains("--option"));
-  }
-
-  #[test]
-  fn socket_startup_refuses_non_socket_path() {
-    let path = unique_socket_path("regular-file");
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(&path, "keep").unwrap();
-
-    let error = prepare_socket_path(&path).unwrap_err().to_string();
-
-    assert!(error.contains("refusing to remove non-socket path"));
-    assert_eq!(fs::read_to_string(&path).unwrap(), "keep");
-    cleanup_socket_path(&path);
-  }
-
-  #[test]
-  fn socket_startup_reports_live_socket() {
-    let path = unique_socket_path("live-socket");
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let listener = UnixListener::bind(&path).unwrap();
-
-    let error = prepare_socket_path(&path).unwrap_err().to_string();
-
-    assert!(error.contains("live daemon socket already exists"));
-    assert!(path.exists());
-    drop(listener);
-    cleanup_socket_path(&path);
-  }
-
-  #[test]
-  fn socket_startup_removes_stale_socket() {
-    let path = unique_socket_path("stale-socket");
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    drop(UnixListener::bind(&path).unwrap());
-
-    prepare_socket_path(&path).unwrap();
-
-    assert!(!path.exists());
-    cleanup_socket_path(&path);
-  }
-
-  #[test]
-  fn socket_startup_sets_private_permissions() {
-    let path = unique_socket_path("private-socket");
-    let mut reporter = RecordingStartupReporter::default();
-
-    let listener = bind_listener(&path, &mut reporter).unwrap();
-
-    let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-    assert_eq!(mode, 0o600);
-    drop(listener);
-    cleanup_socket_path(&path);
-  }
-
-  #[test]
-  fn readiness_reports_bind_failure() {
-    let path = unique_socket_path("bind-failure");
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let path = path.parent().unwrap().join("a".repeat(200));
-    let mut reporter = RecordingStartupReporter::default();
-
-    let error = bind_listener(&path, &mut reporter).unwrap_err().to_string();
-
-    assert!(error.contains("binding"));
-    assert!(reporter.error.unwrap().contains("binding"));
-    cleanup_socket_path(&path);
-  }
-
-  #[test]
-  fn readiness_reports_successful_background_startup() {
-    let path = unique_socket_path("ready");
-    let mut reporter = RecordingStartupReporter::default();
-
-    let listener = bind_listener(&path, &mut reporter).unwrap();
-
-    assert_eq!(reporter.ready, Some(path.clone()));
-    assert!(reporter.error.is_none());
-    assert!(path.exists());
-    drop(listener);
-    cleanup_socket_path(&path);
-  }
-
-  #[test]
-  fn pipe_startup_reporter_writes_pid_when_ready() {
-    let path = unique_socket_path("pipe-ready");
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let pid_file = path.parent().unwrap().join("evix.pid");
-    let (reader, writer) = UnixStream::pair().unwrap();
-    let mut reporter = PipeStartupReporter::new(writer, pid_file.clone());
-
-    reporter.ready(&path).unwrap();
-
-    let mut line = String::new();
-    BufReader::new(reader).read_line(&mut line).unwrap();
-    let response: Response = serde_json::from_str(line.trim()).unwrap();
-    assert!(matches!(response, Response::Done));
-    assert_eq!(
-      fs::read_to_string(&pid_file).unwrap(),
-      process::id().to_string()
-    );
-    cleanup_socket_path(&path);
-  }
-
-  #[test]
-  fn readiness_failure_removes_bound_socket() {
-    let path = unique_socket_path("ready-failure");
-    let mut reporter = FailingReadyReporter;
-
-    let error = bind_listener(&path, &mut reporter).unwrap_err().to_string();
-
-    assert!(error.contains("ready failed"));
-    assert!(!path.exists());
-    cleanup_socket_path(&path);
-  }
-
-  #[test]
-  fn runtime_cleanup_removes_owned_socket_and_pid_file() {
-    let path = unique_socket_path("runtime-cleanup");
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let listener = UnixListener::bind(&path).unwrap();
-    let pid_file = path.parent().unwrap().join("evix.pid");
-    fs::write(&pid_file, "123").unwrap();
-
-    drop(RuntimeCleanup::new(path.clone(), Some(pid_file.clone())));
-
-    assert!(!path.exists());
-    assert!(!pid_file.exists());
-    drop(listener);
-    cleanup_socket_path(&path);
-  }
-
-  #[test]
-  fn request_reader_rejects_oversized_line() {
-    let mut reader = Cursor::new(b"abcdef\n");
-
-    let error = read_limited_line(&mut reader, 4).unwrap_err().to_string();
-
-    assert!(error.contains("daemon request exceeds 4 bytes"));
-  }
-
-  #[test]
-  fn request_reader_accepts_line_at_limit() {
-    let mut reader = Cursor::new(b"abc\n");
-
-    let line = read_limited_line(&mut reader, 4).unwrap();
-
-    assert_eq!(line, b"abc\n");
-  }
-
-  fn unique_socket_path(name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-      .duration_since(UNIX_EPOCH)
-      .unwrap()
-      .as_nanos();
-    env::temp_dir()
-      .join(format!("evix-daemon-{name}-{}-{nanos}", process::id()))
-      .join("evix.sock")
-  }
-
-  fn cleanup_socket_path(path: &Path) {
-    let _ = fs::remove_file(path);
-    if let Some(parent) = path.parent() {
-      let _ = fs::remove_dir_all(parent);
-    }
-  }
-
-  #[derive(Default)]
-  struct RecordingStartupReporter {
-    ready: Option<PathBuf>,
-    error: Option<String>,
-  }
-
-  impl StartupReporter for RecordingStartupReporter {
-    fn ready(&mut self, socket: &Path) -> Result<()> {
-      self.ready = Some(socket.to_path_buf());
-      Ok(())
-    }
-
-    fn error(&mut self, err: &anyhow::Error) -> Result<()> {
-      self.error = Some(err.to_string());
-      Ok(())
-    }
-  }
-
-  struct FailingReadyReporter;
-
-  impl StartupReporter for FailingReadyReporter {
-    fn ready(&mut self, _socket: &Path) -> Result<()> {
-      Err(anyhow!("ready failed"))
-    }
-
-    fn error(&mut self, _err: &anyhow::Error) -> Result<()> {
-      Ok(())
-    }
-  }
-}
+#[cfg(test)] mod tests;

@@ -14,7 +14,7 @@ use anyhow::{Context as _, Result, bail};
 use args::{CommandPlan, Verbosity, parse_plan};
 use evix::{Config, Event, Input, Session, json as evix_json};
 use evix_daemon as daemon;
-use evix_protocol::{Request, Response};
+use evix_protocol::{Config as WireConfig, Request, Response};
 use futures_util::StreamExt as _;
 use tokio::runtime::Builder;
 use tracing::{info, warn};
@@ -70,7 +70,7 @@ fn run_plan(plan: CommandPlan) -> Result<()> {
     } => {
       if use_daemon {
         run_client_or_local(
-          daemon_request(Request::eval(&config))?,
+          daemon_request(Request::eval(&wire_config(&config)))?,
           socket,
           || run_local_eval(&config),
         )
@@ -85,7 +85,7 @@ fn run_plan(plan: CommandPlan) -> Result<()> {
     } => {
       if use_daemon {
         run_client_or_local(
-          daemon_request(Request::watch(&config))?,
+          daemon_request(Request::watch(&wire_config(&config)))?,
           socket,
           || run_local_watch(&config),
         )
@@ -98,10 +98,16 @@ fn run_plan(plan: CommandPlan) -> Result<()> {
       filter,
       socket,
     } => {
-      run_daemon_only(daemon_request(Request::query(&config, &filter))?, socket)
+      run_daemon_only(
+        daemon_request(Request::query(&wire_config(&config), &filter))?,
+        socket,
+      )
     },
     CommandPlan::Diff { config, socket } => {
-      run_daemon_only(daemon_request(Request::diff(&config))?, socket)
+      run_daemon_only(
+        daemon_request(Request::diff(&wire_config(&config)))?,
+        socket,
+      )
     },
     CommandPlan::Daemon { socket, foreground } => {
       daemon::run(daemon::socket_path(socket), foreground)
@@ -129,7 +135,11 @@ fn daemon_request(request: Request) -> Result<Request> {
   })
 }
 
-fn daemon_config(mut config: Config) -> Result<Config> {
+fn wire_config(config: &Config) -> WireConfig {
+  config.into()
+}
+
+fn daemon_config(mut config: WireConfig) -> Result<WireConfig> {
   config.input = match config.input {
     Input::File(path) => {
       Input::File(fs::canonicalize(&path).with_context(|| {
@@ -360,7 +370,7 @@ mod tests {
 
     let error = run_daemon_request(
       client,
-      &Request::query(&Config::default(), &Default::default()),
+      &Request::query(&wire_config(&Config::default()), &Default::default()),
     )
     .unwrap_err()
     .to_string();
@@ -376,7 +386,11 @@ mod tests {
     let (client, server) = UnixStream::pair().unwrap();
     let handle = thread::spawn(move || read_request_and_close(server));
 
-    run_daemon_request(client, &Request::watch(&Config::default())).unwrap();
+    run_daemon_request(
+      client,
+      &Request::watch(&wire_config(&Config::default())),
+    )
+    .unwrap();
 
     handle.join().unwrap();
   }
@@ -386,7 +400,7 @@ mod tests {
     let socket = unique_socket_path("missing");
 
     let error = run_daemon_only(
-      Request::query(&Config::default(), &Default::default()),
+      Request::query(&wire_config(&Config::default()), &Default::default()),
       Some(socket.clone()),
     )
     .unwrap_err();
@@ -415,7 +429,7 @@ mod tests {
     drop(listener);
 
     let error = run_daemon_only(
-      Request::query(&Config::default(), &Default::default()),
+      Request::query(&wire_config(&Config::default()), &Default::default()),
       Some(socket.clone()),
     )
     .unwrap_err();
@@ -469,7 +483,7 @@ mod tests {
     let mut fell_back = false;
 
     run_client_or_local(
-      Request::eval(&Config::default()),
+      Request::eval(&wire_config(&Config::default())),
       Some(socket),
       || {
         fell_back = true;
@@ -489,7 +503,7 @@ mod tests {
     let mut fell_back = false;
 
     let error = run_client_or_local(
-      Request::eval(&Config::default()),
+      Request::eval(&wire_config(&Config::default())),
       Some(socket.clone()),
       || {
         fell_back = true;
@@ -549,8 +563,9 @@ mod tests {
 
   #[test]
   fn daemon_request_canonicalizes_file_input() {
-    let request = daemon_request(Request::eval(&Config::file("Cargo.toml")))
-      .expect("daemon request");
+    let request =
+      daemon_request(Request::eval(&wire_config(&Config::file("Cargo.toml"))))
+        .expect("daemon request");
 
     let Request::Eval { config, .. } = request else {
       panic!("expected eval request");
@@ -565,8 +580,10 @@ mod tests {
 
   #[test]
   fn daemon_request_rewrites_current_dir_flake_ref() {
-    let request = daemon_request(Request::eval(&Config::flake(".#hydraJobs")))
-      .expect("daemon request");
+    let request = daemon_request(Request::eval(&wire_config(&Config::flake(
+      ".#hydraJobs",
+    ))))
+    .expect("daemon request");
 
     let Request::Eval { config, .. } = request else {
       panic!("expected eval request");
