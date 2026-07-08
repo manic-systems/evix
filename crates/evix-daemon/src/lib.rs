@@ -1,17 +1,22 @@
-#[cfg(target_os = "linux")]
-use std::os::unix::io::AsRawFd as _;
 use std::{
   collections::{HashMap, VecDeque},
   env,
-  fs,
+  fs::{self, OpenOptions},
   io::{BufRead, BufReader, Write},
-  os::unix::{
-    fs::{FileTypeExt as _, PermissionsExt as _},
-    net::{UnixListener, UnixStream},
+  os::{
+    fd::{AsRawFd as _, RawFd},
+    unix::{
+      fs::{FileTypeExt as _, PermissionsExt as _},
+      net::{UnixListener, UnixStream},
+    },
   },
   path::{Path, PathBuf},
   process,
-  sync::{Arc, Mutex},
+  sync::{
+    Arc,
+    Mutex,
+    atomic::{AtomicBool, AtomicI32, Ordering},
+  },
   thread,
 };
 
@@ -25,6 +30,9 @@ use tracing::{error, info};
 const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SESSIONS: usize = 32;
 const MAX_CONNECTIONS: usize = 64;
+
+static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+static SHUTDOWN_SIGNAL_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
 
 #[derive(Default)]
 struct DaemonState {
@@ -119,19 +127,39 @@ pub fn socket_path(flag: Option<PathBuf>) -> PathBuf {
 }
 
 pub fn run(socket: PathBuf, foreground: bool) -> Result<()> {
-  let mut reporter: Box<dyn StartupReporter> = if foreground {
-    Box::new(NoopStartupReporter)
+  SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
+  let pid_file = (!foreground).then(pid_path);
+  let mut reporter: Box<dyn StartupReporter> = if let Some(pid_file) = &pid_file
+  {
+    Box::new(daemonize(&socket, pid_file.clone())?)
   } else {
-    Box::new(daemonize(&socket)?)
+    Box::new(NoopStartupReporter)
   };
 
   let listener = bind_listener(&socket, reporter.as_mut())?;
+  let _cleanup = RuntimeCleanup::new(socket, pid_file);
+  let shutdown = ShutdownSignals::install()?;
   let state = Arc::new(DaemonState::default());
   let connections = Arc::new(ConnectionLimiter::new(MAX_CONNECTIONS));
 
-  for conn in listener.incoming() {
-    match conn {
-      Ok(mut stream) => {
+  serve_connections(listener, state, connections, &shutdown)?;
+
+  Ok(())
+}
+
+fn serve_connections(
+  listener: UnixListener,
+  state: Arc<DaemonState>,
+  connections: Arc<ConnectionLimiter>,
+  shutdown: &ShutdownSignals,
+) -> Result<()> {
+  while !SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
+    if wait_for_connection_or_shutdown(&listener, shutdown)? {
+      break;
+    }
+
+    match listener.accept() {
+      Ok((mut stream, _addr)) => {
         let Some(slot) = connections.acquire() else {
           let _ = write_response(
             &mut stream,
@@ -147,11 +175,51 @@ pub fn run(socket: PathBuf, foreground: bool) -> Result<()> {
           }
         });
       },
+      Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {},
       Err(err) => error!(error = %err, "accept failed"),
     }
   }
 
   Ok(())
+}
+
+fn wait_for_connection_or_shutdown(
+  listener: &UnixListener,
+  shutdown: &ShutdownSignals,
+) -> Result<bool> {
+  let mut fds = [
+    libc::pollfd {
+      fd:      shutdown.read_fd(),
+      events:  libc::POLLIN,
+      revents: 0,
+    },
+    libc::pollfd {
+      fd:      listener.as_raw_fd(),
+      events:  libc::POLLIN,
+      revents: 0,
+    },
+  ];
+
+  loop {
+    // SAFETY: `fds` points to two initialized poll descriptors that remain
+    // valid for the duration of the call.
+    let result = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, -1) };
+    if result >= 0 {
+      break;
+    }
+    let err = std::io::Error::last_os_error();
+    if err.kind() != std::io::ErrorKind::Interrupted {
+      return Err(err).context("polling daemon listener");
+    }
+    if SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
+      return Ok(true);
+    }
+  }
+
+  Ok(
+    SHUTDOWN_REQUESTED.load(Ordering::SeqCst)
+      || (fds[0].revents & libc::POLLIN) != 0,
+  )
 }
 
 struct ConnectionLimiter {
@@ -213,6 +281,26 @@ impl Drop for ConnectionSlot {
   }
 }
 
+struct RuntimeCleanup {
+  socket:   PathBuf,
+  pid_file: Option<PathBuf>,
+}
+
+impl RuntimeCleanup {
+  fn new(socket: PathBuf, pid_file: Option<PathBuf>) -> Self {
+    Self { socket, pid_file }
+  }
+}
+
+impl Drop for RuntimeCleanup {
+  fn drop(&mut self) {
+    let _ = fs::remove_file(&self.socket);
+    if let Some(pid_file) = &self.pid_file {
+      let _ = fs::remove_file(pid_file);
+    }
+  }
+}
+
 fn bind_listener(
   socket: &Path,
   reporter: &mut dyn StartupReporter,
@@ -228,10 +316,19 @@ fn bind_listener(
       return Err(err);
     },
   };
-  fs::set_permissions(socket, fs::Permissions::from_mode(0o600))
-    .with_context(|| format!("setting permissions on {}", socket.display()))?;
+  if let Err(err) =
+    fs::set_permissions(socket, fs::Permissions::from_mode(0o600))
+      .with_context(|| format!("setting permissions on {}", socket.display()))
+  {
+    let _ = fs::remove_file(socket);
+    let _ = reporter.error(&err);
+    return Err(err);
+  }
 
-  reporter.ready(socket)?;
+  if let Err(err) = reporter.ready(socket) {
+    let _ = fs::remove_file(socket);
+    return Err(err);
+  }
   info!(socket = %socket.display(), "evix daemon listening");
   Ok(listener)
 }
@@ -294,18 +391,26 @@ impl StartupReporter for NoopStartupReporter {
 }
 
 struct PipeStartupReporter {
-  stream: UnixStream,
+  stream:   UnixStream,
+  pid_file: PathBuf,
 }
 
 impl PipeStartupReporter {
-  fn new(stream: UnixStream) -> Self {
-    Self { stream }
+  fn new(stream: UnixStream, pid_file: PathBuf) -> Self {
+    Self { stream, pid_file }
   }
 }
 
 impl StartupReporter for PipeStartupReporter {
   fn ready(&mut self, _socket: &Path) -> Result<()> {
-    write_response(&mut self.stream, &Response::Done)
+    fs::write(&self.pid_file, process::id().to_string()).with_context(
+      || format!("writing pid file {}", self.pid_file.display()),
+    )?;
+    if let Err(err) = write_response(&mut self.stream, &Response::Done) {
+      let _ = fs::remove_file(&self.pid_file);
+      return Err(err);
+    }
+    Ok(())
   }
 
   fn error(&mut self, err: &anyhow::Error) -> Result<()> {
@@ -313,7 +418,205 @@ impl StartupReporter for PipeStartupReporter {
   }
 }
 
-fn daemonize(socket: &Path) -> Result<PipeStartupReporter> {
+fn redirect_stdio_to_dev_null() -> Result<()> {
+  let dev_null = OpenOptions::new()
+    .read(true)
+    .write(true)
+    .open("/dev/null")
+    .context("opening /dev/null for daemon stdio")?;
+  let source = stable_source_fd(dev_null.as_raw_fd())?;
+
+  for target in [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+    // SAFETY: `source` is an open file descriptor for `/dev/null`, and `target`
+    // is one of the standard file descriptor numbers owned by this process.
+    if unsafe { libc::dup2(source, target) } < 0 {
+      let err = std::io::Error::last_os_error();
+      if source != dev_null.as_raw_fd() {
+        // SAFETY: closes the temporary descriptor opened by `stable_source_fd`.
+        unsafe {
+          libc::close(source);
+        }
+      }
+      return Err(err).context("redirecting daemon stdio to /dev/null");
+    }
+  }
+
+  if source != dev_null.as_raw_fd() {
+    // SAFETY: closes the temporary descriptor opened by `stable_source_fd`.
+    unsafe {
+      libc::close(source);
+    }
+  }
+
+  Ok(())
+}
+
+fn stable_source_fd(fd: RawFd) -> Result<RawFd> {
+  if fd > libc::STDERR_FILENO {
+    return Ok(fd);
+  }
+
+  // SAFETY: duplicates a valid open descriptor to a descriptor number outside
+  // the stdio range so dropping the `File` cannot close fd 0, 1, or 2.
+  let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+  if duplicate < 0 {
+    return Err(std::io::Error::last_os_error())
+      .context("duplicating /dev/null descriptor");
+  }
+  Ok(duplicate)
+}
+
+struct ShutdownSignals {
+  read_fd:  RawFd,
+  write_fd: RawFd,
+  old_int:  libc::sigaction,
+  old_term: libc::sigaction,
+}
+
+impl ShutdownSignals {
+  fn install() -> Result<Self> {
+    let mut fds = [0; 2];
+    // SAFETY: `fds` points to two writable integers populated by `pipe`.
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } < 0 {
+      return Err(std::io::Error::last_os_error())
+        .context("creating daemon shutdown pipe");
+    }
+
+    if let Err(err) = configure_signal_pipe(fds[0], fds[1]) {
+      close_fd(fds[0]);
+      close_fd(fds[1]);
+      return Err(err);
+    }
+
+    SHUTDOWN_SIGNAL_WRITE_FD.store(fds[1], Ordering::SeqCst);
+
+    let old_int = match install_shutdown_handler(libc::SIGINT) {
+      Ok(old) => old,
+      Err(err) => {
+        SHUTDOWN_SIGNAL_WRITE_FD.store(-1, Ordering::SeqCst);
+        close_fd(fds[0]);
+        close_fd(fds[1]);
+        return Err(err);
+      },
+    };
+    let old_term = match install_shutdown_handler(libc::SIGTERM) {
+      Ok(old) => old,
+      Err(err) => {
+        restore_signal_handler(libc::SIGINT, &old_int);
+        SHUTDOWN_SIGNAL_WRITE_FD.store(-1, Ordering::SeqCst);
+        close_fd(fds[0]);
+        close_fd(fds[1]);
+        return Err(err);
+      },
+    };
+
+    Ok(Self {
+      read_fd: fds[0],
+      write_fd: fds[1],
+      old_int,
+      old_term,
+    })
+  }
+
+  fn read_fd(&self) -> RawFd {
+    self.read_fd
+  }
+}
+
+impl Drop for ShutdownSignals {
+  fn drop(&mut self) {
+    restore_signal_handler(libc::SIGINT, &self.old_int);
+    restore_signal_handler(libc::SIGTERM, &self.old_term);
+    SHUTDOWN_SIGNAL_WRITE_FD.store(-1, Ordering::SeqCst);
+    close_fd(self.read_fd);
+    close_fd(self.write_fd);
+  }
+}
+
+fn configure_signal_pipe(read_fd: RawFd, write_fd: RawFd) -> Result<()> {
+  set_fd_cloexec(read_fd)?;
+  set_fd_cloexec(write_fd)?;
+  set_fd_nonblocking(write_fd)?;
+  Ok(())
+}
+
+fn set_fd_cloexec(fd: RawFd) -> Result<()> {
+  // SAFETY: reads descriptor flags for a valid file descriptor.
+  let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+  if flags < 0 {
+    return Err(std::io::Error::last_os_error()).context("reading fd flags");
+  }
+  // SAFETY: writes descriptor flags for the same valid file descriptor.
+  if unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+    return Err(std::io::Error::last_os_error()).context("setting fd cloexec");
+  }
+  Ok(())
+}
+
+fn set_fd_nonblocking(fd: RawFd) -> Result<()> {
+  // SAFETY: reads status flags for a valid file descriptor.
+  let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+  if flags < 0 {
+    return Err(std::io::Error::last_os_error()).context("reading fd status");
+  }
+  // SAFETY: writes status flags for the same valid file descriptor.
+  if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+    return Err(std::io::Error::last_os_error())
+      .context("setting fd nonblocking");
+  }
+  Ok(())
+}
+
+fn install_shutdown_handler(signal: libc::c_int) -> Result<libc::sigaction> {
+  // SAFETY: zero initialization is valid for `sigaction` before filling fields.
+  let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+  action.sa_sigaction = handle_shutdown_signal as *const () as usize;
+  action.sa_flags = 0;
+  // SAFETY: initializes the signal mask owned by `action`.
+  if unsafe { libc::sigemptyset(&mut action.sa_mask) } < 0 {
+    return Err(std::io::Error::last_os_error())
+      .context("initializing signal mask");
+  }
+
+  // SAFETY: zero initialization provides storage for the old action populated
+  // by `sigaction`.
+  let mut old_action: libc::sigaction = unsafe { std::mem::zeroed() };
+  // SAFETY: installs a simple async-signal-safe handler for SIGINT/SIGTERM.
+  if unsafe { libc::sigaction(signal, &action, &mut old_action) } < 0 {
+    return Err(std::io::Error::last_os_error())
+      .context("installing daemon signal handler");
+  }
+  Ok(old_action)
+}
+
+fn restore_signal_handler(signal: libc::c_int, action: &libc::sigaction) {
+  // SAFETY: restores a handler previously returned by `sigaction`.
+  unsafe {
+    libc::sigaction(signal, action, std::ptr::null_mut());
+  }
+}
+
+extern "C" fn handle_shutdown_signal(_signal: libc::c_int) {
+  SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
+  let fd = SHUTDOWN_SIGNAL_WRITE_FD.load(Ordering::SeqCst);
+  if fd >= 0 {
+    let byte = [1_u8];
+    // SAFETY: `write` is async-signal-safe; the fd is a nonblocking pipe write
+    // end while handlers are installed. Errors are intentionally ignored.
+    unsafe {
+      libc::write(fd, byte.as_ptr().cast(), byte.len());
+    }
+  }
+}
+
+fn close_fd(fd: RawFd) {
+  // SAFETY: best-effort close for fds owned by daemon lifecycle helpers.
+  unsafe {
+    libc::close(fd);
+  }
+}
+
+fn daemonize(socket: &Path, pid_file: PathBuf) -> Result<PipeStartupReporter> {
   let (reader, writer) =
     UnixStream::pair().context("creating daemon readiness pipe")?;
 
@@ -327,7 +630,7 @@ fn daemonize(socket: &Path) -> Result<PipeStartupReporter> {
   }
 
   drop(reader);
-  let reporter = PipeStartupReporter::new(writer);
+  let reporter = PipeStartupReporter::new(writer, pid_file);
 
   if unsafe { libc::setsid() } < 0 {
     exit_after_startup_error(reporter, anyhow!("setsid failed"));
@@ -347,10 +650,7 @@ fn daemonize(socket: &Path) -> Result<PipeStartupReporter> {
     exit_after_startup_error(reporter, err);
   }
 
-  let pid_path = pid_path();
-  if let Err(err) = fs::write(&pid_path, process::id().to_string())
-    .with_context(|| format!("writing pid file {}", pid_path.display()))
-  {
+  if let Err(err) = redirect_stdio_to_dev_null() {
     exit_after_startup_error(reporter, err);
   }
 
@@ -792,6 +1092,55 @@ mod tests {
   }
 
   #[test]
+  fn pipe_startup_reporter_writes_pid_when_ready() {
+    let path = unique_socket_path("pipe-ready");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let pid_file = path.parent().unwrap().join("evix.pid");
+    let (reader, writer) = UnixStream::pair().unwrap();
+    let mut reporter = PipeStartupReporter::new(writer, pid_file.clone());
+
+    reporter.ready(&path).unwrap();
+
+    let mut line = String::new();
+    BufReader::new(reader).read_line(&mut line).unwrap();
+    let response: Response = serde_json::from_str(line.trim()).unwrap();
+    assert!(matches!(response, Response::Done));
+    assert_eq!(
+      fs::read_to_string(&pid_file).unwrap(),
+      process::id().to_string()
+    );
+    cleanup_socket_path(&path);
+  }
+
+  #[test]
+  fn readiness_failure_removes_bound_socket() {
+    let path = unique_socket_path("ready-failure");
+    let mut reporter = FailingReadyReporter;
+
+    let error = bind_listener(&path, &mut reporter).unwrap_err().to_string();
+
+    assert!(error.contains("ready failed"));
+    assert!(!path.exists());
+    cleanup_socket_path(&path);
+  }
+
+  #[test]
+  fn runtime_cleanup_removes_owned_socket_and_pid_file() {
+    let path = unique_socket_path("runtime-cleanup");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let listener = UnixListener::bind(&path).unwrap();
+    let pid_file = path.parent().unwrap().join("evix.pid");
+    fs::write(&pid_file, "123").unwrap();
+
+    drop(RuntimeCleanup::new(path.clone(), Some(pid_file.clone())));
+
+    assert!(!path.exists());
+    assert!(!pid_file.exists());
+    drop(listener);
+    cleanup_socket_path(&path);
+  }
+
+  #[test]
   fn request_reader_rejects_oversized_line() {
     let mut reader = Cursor::new(b"abcdef\n");
 
@@ -840,6 +1189,18 @@ mod tests {
 
     fn error(&mut self, err: &anyhow::Error) -> Result<()> {
       self.error = Some(err.to_string());
+      Ok(())
+    }
+  }
+
+  struct FailingReadyReporter;
+
+  impl StartupReporter for FailingReadyReporter {
+    fn ready(&mut self, _socket: &Path) -> Result<()> {
+      Err(anyhow!("ready failed"))
+    }
+
+    fn error(&mut self, _err: &anyhow::Error) -> Result<()> {
       Ok(())
     }
   }
