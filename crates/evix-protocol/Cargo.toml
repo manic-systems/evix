@@ -1,6 +1,6 @@
 [package]
 name                   = "evix-protocol"
-description            = "Daemon and worker protocol types for evix"
+description            = "Daemon JSON protocol and shared wire types for evix"
 edition.workspace      = true
 version.workspace      = true
 rust-version.workspace = true

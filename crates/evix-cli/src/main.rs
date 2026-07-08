@@ -1,7 +1,6 @@
 mod args;
 
 use std::{
-  env,
   fs,
   future::Future,
   io,
@@ -13,7 +12,7 @@ use std::{
 
 use anyhow::{Context as _, Result, bail};
 use args::{CommandPlan, Verbosity, parse_plan};
-use evix::{Config, Event, Input, Session, WORKER_ENV, json as evix_json};
+use evix::{Config, Event, Input, Session, json as evix_json};
 use evix_daemon as daemon;
 use evix_protocol::{Request, Response};
 use futures_util::StreamExt as _;
@@ -27,13 +26,16 @@ enum OutputWrite {
 }
 
 fn main() {
-  if env::var(WORKER_ENV).is_ok() {
+  if std::env::var_os(evix::WORKER_ENV).is_some() {
     init_tracing_subscriber(Verbosity::default());
-    if let Err(err) = evix::run_worker() {
+  }
+  match evix::run_worker_if_requested() {
+    Ok(true) => return,
+    Ok(false) => {},
+    Err(err) => {
       eprintln!("Error: {err:?}");
       process::exit(1);
-    }
-    return;
+    },
   }
 
   if let Err(err) = run_cli() {
@@ -342,6 +344,7 @@ fn init_tracing_subscriber(verbosity: Verbosity) {
 #[cfg(test)]
 mod tests {
   use std::{
+    env,
     fs,
     os::unix::net::UnixListener,
     thread,
