@@ -274,7 +274,8 @@ fn run_local_eval(config: &Config) -> Result<()> {
   );
   with_runtime(async {
     let session = Session::open(config.clone()).await?;
-    let mut events = session.stream();
+    let mut events =
+      session.stream_bounded(evix::DEFAULT_STREAM_BUFFER_CAPACITY);
     let mut stdout = io::stdout().lock();
     while let Some(event) = events.next().await {
       let event = event?;
@@ -296,7 +297,7 @@ fn run_local_eval(config: &Config) -> Result<()> {
 fn run_local_watch(config: &Config) -> Result<()> {
   with_runtime(async {
     let session = Session::open(config.clone()).await?;
-    let mut diffs = session.watch();
+    let mut diffs = session.watch_bounded(evix::DEFAULT_STREAM_BUFFER_CAPACITY);
     let mut stdout = io::stdout().lock();
     while let Some(diff) = diffs.next().await {
       if write_output_line(&mut stdout, &evix_json::diff_line(&diff?))?

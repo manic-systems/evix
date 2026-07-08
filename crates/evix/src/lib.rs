@@ -39,6 +39,12 @@ pub use session::Session;
 /// this variable and enter the worker protocol when it is set.
 pub const WORKER_ENV: &str = "EVIX_WORKER";
 
+/// Default bounded result-buffer size for application stream consumers.
+///
+/// This is large enough to absorb short stdout or daemon-socket write bursts
+/// while still applying backpressure instead of allowing unbounded growth.
+pub const DEFAULT_STREAM_BUFFER_CAPACITY: usize = 1024;
+
 /// Worker entrypoint.
 ///
 /// Reads a typed setup message from stdin, then processes attribute paths

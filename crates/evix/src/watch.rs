@@ -356,6 +356,43 @@ mod tests {
       });
   }
 
+  #[test]
+  fn bounded_watch_sender_reports_eval_error_without_replacing_warm_state() {
+    tokio::runtime::Builder::new_current_thread()
+      .enable_time()
+      .build()
+      .unwrap()
+      .block_on(async {
+        let drv = derivation("old");
+        let graph = EvalGraph::from([(drv.attr_path.clone(), drv.clone())]);
+        let state = RwLock::new(WarmState {
+          graph: graph.clone(),
+          completed: true,
+          ..WarmState::default()
+        });
+        let (tx, mut rx) = futures_mpsc::channel(1);
+        let mut tx = WatchSender::Bounded(tx);
+
+        let action = apply_watch_evaluation_result(
+          Err(anyhow::anyhow!("broken eval")),
+          graph.clone(),
+          &state,
+          &mut tx,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(action, WatchAction::Continue);
+        let error = rx.next().await.unwrap().unwrap_err();
+        assert!(error.to_string().contains("broken eval"));
+
+        let state = state.read().await;
+        assert_eq!(state.graph[&drv.attr_path].drv_path, drv.drv_path);
+        assert!(state.completed);
+        assert!(state.error.is_none());
+      });
+  }
+
   fn derivation(name: &str) -> Derivation {
     Derivation {
       attr:          name.into(),

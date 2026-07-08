@@ -733,7 +733,7 @@ async fn handle_eval(
   config: Config,
 ) -> Result<()> {
   let session = state.replace_session(config).await?;
-  let mut events = session.stream();
+  let mut events = session.stream_bounded(evix::DEFAULT_STREAM_BUFFER_CAPACITY);
   while let Some(event) = events.next().await {
     match event {
       Ok(event) => write_response(stream, &Response::event(&event))?,
@@ -749,7 +749,7 @@ async fn handle_watch(
   config: Config,
 ) -> Result<()> {
   let session = state.replace_session(config).await?;
-  let mut diffs = session.watch();
+  let mut diffs = session.watch_bounded(evix::DEFAULT_STREAM_BUFFER_CAPACITY);
   while let Some(diff) = diffs.next().await {
     match diff {
       Ok(diff) => write_response(stream, &Response::diff(&diff))?,
