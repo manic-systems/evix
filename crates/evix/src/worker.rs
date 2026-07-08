@@ -240,7 +240,7 @@ fn flake_lock_mode(local_flake: bool) -> nix_bindings::flake::LockMode {
 }
 
 #[cfg(feature = "flake")]
-fn is_local_flake_reference(reference: &str) -> bool {
+pub(crate) fn is_local_flake_reference(reference: &str) -> bool {
   let path = reference
     .strip_prefix("path:")
     .unwrap_or(reference)
