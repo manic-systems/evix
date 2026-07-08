@@ -17,7 +17,6 @@ use crate::{
   Config,
   EvalError,
   Event,
-  Input,
   Remote,
   remote_worker::RemoteWorker,
   worker_config::WorkerConfig,
@@ -105,8 +104,7 @@ where
   Fut: Future<Output = Result<()>>,
 {
   validate_config(&config)?;
-  warn_virtual_flake_locking(&config);
-  let worker_config = WorkerConfig::from(&config);
+  let worker_config = worker_config(&config).await?;
   let specs = worker_specs(&config);
   if specs.is_empty() {
     bail!("evaluation requires at least one local or remote worker");
@@ -153,27 +151,25 @@ where
   result
 }
 
-fn warn_virtual_flake_locking(config: &Config) {
-  if uses_virtual_flake_locking(config) {
-    warn!(
-      "non-local flake inputs are locked independently by each worker; use a \
-       local path flake with an up-to-date flake.lock for reproducible \
-       multi-worker evaluation"
-    );
-  }
+async fn worker_config(config: &Config) -> Result<WorkerConfig> {
+  let mut worker_config = WorkerConfig::from(config);
+  worker_config.locked_flake_json = export_locked_flake(config).await?;
+  Ok(worker_config)
 }
 
 #[cfg(feature = "flake")]
-fn uses_virtual_flake_locking(config: &Config) -> bool {
-  let Input::Flake(reference) = &config.input else {
-    return false;
-  };
-  !crate::worker::is_local_flake_reference(reference)
+async fn export_locked_flake(config: &Config) -> Result<Option<String>> {
+  let config = config.clone();
+  tokio::task::spawn_blocking(move || {
+    crate::worker::export_locked_flake(&config)
+  })
+  .await
+  .context("joining flake lock export task")?
 }
 
 #[cfg(not(feature = "flake"))]
-fn uses_virtual_flake_locking(_config: &Config) -> bool {
-  false
+async fn export_locked_flake(_config: &Config) -> Result<Option<String>> {
+  Ok(None)
 }
 
 fn validate_config(config: &Config) -> Result<()> {

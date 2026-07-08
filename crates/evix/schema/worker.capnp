@@ -44,6 +44,7 @@ struct WorkerConfig {
   overrideInputs @7 :List(StringPair);
   nixOptions @8 :List(StringPair);
   itemTimeoutSeconds @9 :UInt64;
+  lockedFlakeJson @10 :TextOpt;
 }
 
 struct Input {
