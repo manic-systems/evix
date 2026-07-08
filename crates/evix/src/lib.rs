@@ -1,6 +1,7 @@
 use std::env;
 
 mod async_master;
+mod config;
 mod error;
 mod eval;
 pub mod json;
@@ -19,11 +20,10 @@ mod worker_capnp {
   include!(concat!(env!("OUT_DIR"), "/worker_capnp.rs"));
 }
 
+pub use config::{Config, ConfigBuilder};
 pub use error::{Error, Result};
 pub use evix_protocol::{
   AutoArg,
-  Config,
-  ConfigBuilder,
   Derivation,
   Diff,
   EvalError,

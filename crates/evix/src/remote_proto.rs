@@ -69,9 +69,9 @@ where
           root
             .reborrow()
             .init_work()
-            .init_attr_path(path.len() as u32),
+            .init_attr_path(list_len(path.len(), "work attr path")?),
           path,
-        );
+        )?;
       },
       ClientMessage::Shutdown => root.set_shutdown(()),
     }
@@ -243,9 +243,9 @@ fn set_worker_config(
 
   let mut auto_args = builder
     .reborrow()
-    .init_auto_args(config.auto_args.len() as u32);
+    .init_auto_args(list_len(config.auto_args.len(), "auto args")?);
   for (index, (name, arg)) in config.auto_args.iter().enumerate() {
-    let mut item = auto_args.reborrow().get(index as u32);
+    let mut item = auto_args.reborrow().get(list_index(index)?);
     item.set_name(name);
     match arg {
       AutoArg::Expr(expr) => item.set_expr(expr),
@@ -266,17 +266,18 @@ fn set_worker_config(
   builder.set_meta(config.meta);
   builder.set_show_input_drvs(config.show_input_drvs);
   set_pairs(
-    builder
-      .reborrow()
-      .init_override_inputs(config.override_inputs.len() as u32),
+    builder.reborrow().init_override_inputs(list_len(
+      config.override_inputs.len(),
+      "override inputs",
+    )?),
     &config.override_inputs,
-  );
+  )?;
   set_pairs(
     builder
       .reborrow()
-      .init_nix_options(config.nix_options.len() as u32),
+      .init_nix_options(list_len(config.nix_options.len(), "nix options")?),
     &config.nix_options,
-  );
+  )?;
   Ok(())
 }
 
@@ -357,13 +358,20 @@ fn set_event(
       let mut attr_set = builder.reborrow().init_attr_set();
       attr_set.set_attr(attr);
       set_text_list(
-        attr_set.reborrow().init_attr_path(attr_path.len() as u32),
+        attr_set
+          .reborrow()
+          .init_attr_path(list_len(attr_path.len(), "attr path")?),
         attr_path,
-      );
-      set_text_list(attr_set.reborrow().init_attrs(attrs.len() as u32), attrs);
+      )?;
+      set_text_list(
+        attr_set
+          .reborrow()
+          .init_attrs(list_len(attrs.len(), "attr set children")?),
+        attrs,
+      )?;
     },
     Event::Error(error) => {
-      set_eval_error(builder.reborrow().init_error(), error)
+      set_eval_error(builder.reborrow().init_error(), error)?
     },
   }
   Ok(())
@@ -394,20 +402,21 @@ fn set_derivation(
 ) -> Result<()> {
   builder.set_attr(&derivation.attr);
   set_text_list(
-    builder
-      .reborrow()
-      .init_attr_path(derivation.attr_path.len() as u32),
+    builder.reborrow().init_attr_path(list_len(
+      derivation.attr_path.len(),
+      "derivation attr path",
+    )?),
     &derivation.attr_path,
-  );
+  )?;
   builder.set_name(&derivation.name);
   builder.set_system(&derivation.system);
   builder.set_drv_path(&derivation.drv_path);
 
   let mut outputs = builder
     .reborrow()
-    .init_outputs(derivation.outputs.len() as u32);
+    .init_outputs(list_len(derivation.outputs.len(), "derivation outputs")?);
   for (index, (name, path)) in derivation.outputs.iter().enumerate() {
-    let mut output = outputs.reborrow().get(index as u32);
+    let mut output = outputs.reborrow().get(list_index(index)?);
     output.set_name(name);
     match path {
       Some(path) => output.set_path(path),
@@ -424,9 +433,9 @@ fn set_derivation(
 
   let mut input_drvs = builder
     .reborrow()
-    .init_input_drvs(derivation.input_drvs.len() as u32);
+    .init_input_drvs(list_len(derivation.input_drvs.len(), "input drvs")?);
   for (index, (drv_path, outputs)) in derivation.input_drvs.iter().enumerate() {
-    let mut input_drv = input_drvs.reborrow().get(index as u32);
+    let mut input_drv = input_drvs.reborrow().get(list_index(index)?);
     input_drv.set_drv_path(drv_path);
     input_drv.set_value_json(&serde_json::to_string(outputs)?);
   }
@@ -437,9 +446,9 @@ fn set_derivation(
         builder
           .reborrow()
           .init_constituents()
-          .init_some(constituents.len() as u32),
+          .init_some(list_len(constituents.len(), "constituents")?),
         constituents,
-      );
+      )?;
     },
     None => builder.reborrow().init_constituents().set_none(()),
   }
@@ -497,16 +506,17 @@ fn read_derivation(
 fn set_eval_error(
   mut builder: worker_capnp::eval_error::Builder<'_>,
   error: &EvalError,
-) {
+) -> Result<()> {
   builder.set_attr(&error.attr);
   set_text_list(
     builder
       .reborrow()
-      .init_attr_path(error.attr_path.len() as u32),
+      .init_attr_path(list_len(error.attr_path.len(), "error attr path")?),
     &error.attr_path,
-  );
+  )?;
   builder.set_error(&error.error);
   builder.set_fatal(error.fatal);
+  Ok(())
 }
 
 fn read_eval_error(
@@ -526,12 +536,13 @@ fn set_pairs(
     worker_capnp::string_pair::Owned,
   >,
   pairs: &[(String, String)],
-) {
+) -> Result<()> {
   for (index, (key, value)) in pairs.iter().enumerate() {
-    let mut item = builder.reborrow().get(index as u32);
+    let mut item = builder.reborrow().get(list_index(index)?);
     item.set_key(key);
     item.set_value(value);
   }
+  Ok(())
 }
 
 fn read_pairs(
@@ -578,10 +589,11 @@ fn read_text_list_opt(
 fn set_text_list(
   mut builder: capnp::text_list::Builder<'_>,
   values: &[String],
-) {
+) -> Result<()> {
   for (index, value) in values.iter().enumerate() {
-    builder.set(index as u32, value);
+    builder.set(list_index(index)?, value);
   }
+  Ok(())
 }
 
 fn read_text_list(reader: capnp::text_list::Reader<'_>) -> Result<Vec<String>> {
@@ -590,6 +602,15 @@ fn read_text_list(reader: capnp::text_list::Reader<'_>) -> Result<Vec<String>> {
     out.push(reader.get(index)?.to_string()?);
   }
   Ok(out)
+}
+
+fn list_len(len: usize, field: &str) -> Result<u32> {
+  u32::try_from(len)
+    .with_context(|| format!("{field} length exceeds Cap'n Proto list limit"))
+}
+
+fn list_index(index: usize) -> Result<u32> {
+  u32::try_from(index).context("Cap'n Proto list index exceeds u32")
 }
 
 #[cfg(test)]
