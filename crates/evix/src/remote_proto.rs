@@ -16,6 +16,9 @@ use crate::{
 };
 
 pub(crate) const WORKER_PROTOCOL_VERSION: u32 = 1;
+const REMOTE_TRAVERSAL_LIMIT_WORDS: usize = 8 * 1024 * 1024;
+const LOCAL_TRAVERSAL_LIMIT_WORDS: usize = 64 * 1024 * 1024;
+const NESTING_LIMIT: i32 = 64;
 
 #[derive(Debug)]
 pub(crate) enum ClientMessage {
@@ -82,9 +85,26 @@ pub(crate) async fn read_client<R>(reader: &mut R) -> Result<ClientMessage>
 where
   R: AsyncRead + Unpin,
 {
-  let message =
-    capnp_futures::serialize::read_message(reader, ReaderOptions::new())
-      .await?;
+  read_client_with_options(reader, remote_reader_options()).await
+}
+
+pub(crate) async fn read_local_client<R>(
+  reader: &mut R,
+) -> Result<ClientMessage>
+where
+  R: AsyncRead + Unpin,
+{
+  read_client_with_options(reader, local_reader_options()).await
+}
+
+async fn read_client_with_options<R>(
+  reader: &mut R,
+  options: ReaderOptions,
+) -> Result<ClientMessage>
+where
+  R: AsyncRead + Unpin,
+{
+  let message = capnp_futures::serialize::read_message(reader, options).await?;
   let root = message.get_root::<worker_capnp::client_message::Reader>()?;
   match root.which()? {
     worker_capnp::client_message::Which::Setup(setup) => {
@@ -150,9 +170,26 @@ pub(crate) async fn read_server<R>(reader: &mut R) -> Result<ServerMessage>
 where
   R: AsyncRead + Unpin,
 {
-  let message =
-    capnp_futures::serialize::read_message(reader, ReaderOptions::new())
-      .await?;
+  read_server_with_options(reader, remote_reader_options()).await
+}
+
+pub(crate) async fn read_local_server<R>(
+  reader: &mut R,
+) -> Result<ServerMessage>
+where
+  R: AsyncRead + Unpin,
+{
+  read_server_with_options(reader, local_reader_options()).await
+}
+
+async fn read_server_with_options<R>(
+  reader: &mut R,
+  options: ReaderOptions,
+) -> Result<ServerMessage>
+where
+  R: AsyncRead + Unpin,
+{
+  let message = capnp_futures::serialize::read_message(reader, options).await?;
   let root = message.get_root::<worker_capnp::server_message::Reader>()?;
   match root.which()? {
     worker_capnp::server_message::Which::Ready(()) => Ok(ServerMessage::Ready),
@@ -169,6 +206,20 @@ where
     worker_capnp::server_message::Which::Error(error) => {
       Ok(ServerMessage::Error(error?.to_string()?))
     },
+  }
+}
+
+fn remote_reader_options() -> ReaderOptions {
+  ReaderOptions {
+    traversal_limit_in_words: Some(REMOTE_TRAVERSAL_LIMIT_WORDS),
+    nesting_limit:            NESTING_LIMIT,
+  }
+}
+
+fn local_reader_options() -> ReaderOptions {
+  ReaderOptions {
+    traversal_limit_in_words: Some(LOCAL_TRAVERSAL_LIMIT_WORDS),
+    nesting_limit:            NESTING_LIMIT,
   }
 }
 
@@ -543,6 +594,8 @@ fn read_text_list(reader: capnp::text_list::Reader<'_>) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
+  use std::collections::BTreeMap;
+
   use capnp::message::Builder;
   use futures_util::io::Cursor;
 
@@ -570,6 +623,60 @@ mod tests {
         let error = read_client(&mut bytes).await.unwrap_err().to_string();
 
         assert!(error.contains("unsupported worker protocol version"));
+      });
+  }
+
+  #[test]
+  fn local_server_reads_use_larger_traversal_limit_than_remote_reads() {
+    tokio::runtime::Builder::new_current_thread()
+      .enable_io()
+      .build()
+      .unwrap()
+      .block_on(async {
+        assert!(
+          local_reader_options().traversal_limit_in_words
+            > remote_reader_options().traversal_limit_in_words
+        );
+
+        let message =
+          ServerMessage::Event(Box::new(Event::Derivation(Derivation {
+            attr:          "huge".into(),
+            attr_path:     vec!["huge".into()],
+            name:          "huge".into(),
+            system:        "x86_64-linux".into(),
+            drv_path:      "/nix/store/huge.drv".into(),
+            outputs:       BTreeMap::new(),
+            meta:          Some(serde_json::json!({
+              "description": "x".repeat(64 * 1024)
+            })),
+            input_drvs:    BTreeMap::new(),
+            constituents:  None,
+            gc_root_error: None,
+          })));
+
+        let mut bytes = Cursor::new(Vec::new());
+        write_server(&mut bytes, &message).await.unwrap();
+
+        let mut tiny_options = remote_reader_options();
+        tiny_options.traversal_limit_in_words(Some(128));
+
+        bytes.set_position(0);
+        let error = read_server_with_options(&mut bytes, tiny_options)
+          .await
+          .unwrap_err()
+          .to_string();
+        assert!(error.contains("too large"), "{error}");
+
+        bytes.set_position(0);
+        let ServerMessage::Event(event) =
+          read_local_server(&mut bytes).await.unwrap()
+        else {
+          panic!("expected event");
+        };
+        let Event::Derivation(derivation) = *event else {
+          panic!("expected derivation");
+        };
+        assert_eq!(derivation.attr, "huge");
       });
   }
 }

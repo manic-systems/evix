@@ -24,7 +24,12 @@ use tracing::{debug, info};
 use crate::{
   Event,
   WORKER_ENV,
-  remote_proto::{ClientMessage, ServerMessage, read_server, write_client},
+  remote_proto::{
+    ClientMessage,
+    ServerMessage,
+    read_local_server,
+    write_client,
+  },
   worker_config::WorkerConfig,
 };
 
@@ -175,7 +180,7 @@ impl WorkerProcess {
     phase: &str,
     attr: &str,
   ) -> Result<ServerMessage> {
-    match read_server(&mut self.stdout).await {
+    match read_local_server(&mut self.stdout).await {
       Ok(message) => Ok(message),
       Err(err) => Err(self.exit_error(phase, attr, err).await),
     }
