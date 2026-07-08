@@ -9,7 +9,12 @@ use tracing::{debug, trace, warn};
 use crate::{
   AutoArg,
   Input,
-  remote_proto::{ClientMessage, ServerMessage, read_client, write_server},
+  remote_proto::{
+    ClientMessage,
+    ServerMessage,
+    read_local_client,
+    write_server,
+  },
   worker_config::WorkerConfig,
   worker_process::WorkerStatus,
 };
@@ -27,7 +32,7 @@ pub async fn run() -> Result<()> {
   let mut reader = BufReader::new(stdin).compat();
   let mut writer = BufWriter::new(stdout).compat_write();
 
-  let config = match read_client(&mut reader).await? {
+  let config = match read_local_client(&mut reader).await? {
     ClientMessage::Setup { config, .. } => config,
     other => bail!("worker expected setup message, got {other:?}"),
   };
@@ -45,7 +50,7 @@ pub async fn run() -> Result<()> {
   write_server(&mut writer, &ServerMessage::Ready).await?;
 
   loop {
-    let path = match read_client(&mut reader).await? {
+    let path = match read_local_client(&mut reader).await? {
       ClientMessage::Work(path) => path,
       ClientMessage::Shutdown => {
         debug!("received shutdown command, worker exiting");
