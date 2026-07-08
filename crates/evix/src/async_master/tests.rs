@@ -1,12 +1,19 @@
 use std::{
   collections::{BTreeMap, BTreeSet, HashMap},
   future,
+  time::Duration,
 };
 
 use anyhow::anyhow;
+use futures_util::FutureExt as _;
+use tokio_util::compat::TokioAsyncReadCompatExt as _;
 
 use super::*;
-use crate::Derivation;
+use crate::{
+  Derivation,
+  remote_proto::{self, ClientMessage, ServerMessage},
+  remote_worker::RemoteWorker,
+};
 
 #[test]
 fn scheduler_requeues_derivation_rejected_by_remote_system() {
@@ -211,6 +218,69 @@ fn abort_workers_cancels_in_flight_worker_tasks() {
       }])
       .await
       .unwrap();
+    });
+}
+
+#[test]
+fn remote_worker_abort_drops_connection_without_shutdown() {
+  tokio::runtime::Builder::new_current_thread()
+    .enable_io()
+    .enable_time()
+    .build()
+    .unwrap()
+    .block_on(async {
+      let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap();
+      let endpoint = listener.local_addr().unwrap().to_string();
+      let (work_seen_tx, work_seen_rx) = tokio::sync::oneshot::channel();
+
+      let server = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut stream = tcp.compat();
+        assert!(matches!(
+          remote_proto::read_client(&mut stream).await.unwrap(),
+          ClientMessage::Setup { .. }
+        ));
+        remote_proto::write_server(&mut stream, &ServerMessage::Ready)
+          .await
+          .unwrap();
+        assert!(matches!(
+          remote_proto::read_client(&mut stream).await.unwrap(),
+          ClientMessage::Work(path) if path == vec!["slow".to_owned()]
+        ));
+        work_seen_tx.send(()).unwrap();
+        remote_proto::read_client(&mut stream).await
+      });
+
+      let config = WorkerConfig::from(&Config::default());
+      let remote =
+        RemoteWorker::connect(&endpoint, None, &config, "remote-test")
+          .await
+          .unwrap();
+      let mut client = WorkerClient::Remote(remote);
+      let spec = remote_worker(0, &[]);
+
+      {
+        let path = vec!["slow".to_owned()];
+        let work = client.work(&path, &config, &spec).fuse();
+        futures_util::pin_mut!(work);
+        futures_util::select! {
+          result = work => panic!("remote work returned before abort: {result:?}"),
+          seen = work_seen_rx.fuse() => seen.unwrap(),
+        }
+      }
+
+      client.abort().await;
+
+      let read_result = tokio::time::timeout(Duration::from_secs(1), server)
+        .await
+        .unwrap()
+        .unwrap();
+      assert!(
+        read_result.is_err(),
+        "remote abort must close the connection, not send Shutdown"
+      );
     });
 }
 

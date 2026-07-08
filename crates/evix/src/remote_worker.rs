@@ -2,7 +2,7 @@
 use std::{mem, sync::Arc, time::Duration};
 
 use anyhow::{Context as _, Result, bail};
-use futures_util::AsyncRead;
+use futures_util::{AsyncRead, FutureExt as _};
 use nix_bindings::{Context as NixContext, Store};
 use tokio::{
   net::{TcpListener, TcpStream},
@@ -69,7 +69,7 @@ pub async fn serve(addr: &str, token: Option<&str>) -> Result<()> {
 
 pub(crate) struct RemoteWorker {
   label:  String,
-  stream: Compat<TcpStream>,
+  stream: Option<Compat<TcpStream>>,
 }
 
 impl RemoteWorker {
@@ -108,46 +108,44 @@ impl RemoteWorker {
     remote_proto::expect_ready(ready, &label)?;
     info!(worker = %label, "remote worker ready");
 
-    Ok(Self { label, stream })
+    Ok(Self {
+      label,
+      stream: Some(stream),
+    })
   }
 
   pub(crate) async fn work(&mut self, path: &[String]) -> Result<crate::Event> {
-    remote_proto::write_client(
-      &mut self.stream,
-      &ClientMessage::Work(path.to_vec()),
-    )
-    .await
-    .with_context(|| format!("sending work to {}", self.label))?;
-
-    let event = match read_server_timeout(&mut self.stream)
+    let label = self.label.clone();
+    let stream = self.stream()?;
+    remote_proto::write_client(stream, &ClientMessage::Work(path.to_vec()))
       .await
-      .with_context(|| format!("reading event from {}", self.label))?
+      .with_context(|| format!("sending work to {label}"))?;
+
+    let event = match read_server_timeout(stream)
+      .await
+      .with_context(|| format!("reading event from {label}"))?
     {
       ServerMessage::Event(event) => *event,
       ServerMessage::Error(error) => {
-        bail!("remote worker {}: {error}", self.label)
+        bail!("remote worker {label}: {error}")
       },
       other => {
-        bail!(
-          "remote worker {} sent unexpected event response: {other:?}",
-          self.label
-        )
+        bail!("remote worker {label} sent unexpected event response: {other:?}")
       },
     };
 
-    match read_server_timeout(&mut self.stream)
+    match read_server_timeout(stream)
       .await
-      .with_context(|| format!("reading status from {}", self.label))?
+      .with_context(|| format!("reading status from {label}"))?
     {
       ServerMessage::Status(WorkerStatus::Ready) => {},
       ServerMessage::Status(WorkerStatus::Restart) => {},
       ServerMessage::Error(error) => {
-        bail!("remote worker {}: {error}", self.label)
+        bail!("remote worker {label}: {error}")
       },
       other => {
         bail!(
-          "remote worker {} sent unexpected status response: {other:?}",
-          self.label
+          "remote worker {label} sent unexpected status response: {other:?}"
         )
       },
     }
@@ -156,9 +154,21 @@ impl RemoteWorker {
   }
 
   pub(crate) async fn stop(&mut self) {
-    let _ =
-      remote_proto::write_client(&mut self.stream, &ClientMessage::Shutdown)
-        .await;
+    if let Some(stream) = &mut self.stream {
+      let _ =
+        remote_proto::write_client(stream, &ClientMessage::Shutdown).await;
+    }
+  }
+
+  pub(crate) async fn abort(&mut self) {
+    drop(self.stream.take());
+  }
+
+  fn stream(&mut self) -> Result<&mut Compat<TcpStream>> {
+    self
+      .stream
+      .as_mut()
+      .ok_or_else(|| anyhow::anyhow!("remote worker {} is closed", self.label))
   }
 }
 
@@ -196,7 +206,23 @@ async fn serve_connection(
   loop {
     match read_client_timeout(&mut stream).await {
       Ok(ClientMessage::Work(path)) => {
-        let WorkResponse { event, status } = match worker.work(&path).await {
+        let race = {
+          let work = worker.work(&path).fuse();
+          let client_message = remote_proto::read_client(&mut stream).fuse();
+          futures_util::pin_mut!(work, client_message);
+          futures_util::select! {
+            response = work => InflightResult::Worker(response),
+            message = client_message => InflightResult::Client(message),
+          }
+        };
+        let response = match race {
+          InflightResult::Worker(response) => response,
+          InflightResult::Client(message) => {
+            worker.abort().await;
+            return handle_inflight_client_message(message).await;
+          },
+        };
+        let WorkResponse { event, status } = match response {
           Ok(response) => response,
           Err(err) => {
             remote_proto::write_server(
@@ -229,10 +255,28 @@ async fn serve_connection(
         bail!("remote worker setup sent twice")
       },
       Err(err) => {
-        worker.stop().await;
+        worker.abort().await;
         return Err(err).context("reading remote worker request");
       },
     }
+  }
+}
+
+enum InflightResult {
+  Worker(Result<WorkResponse>),
+  Client(Result<ClientMessage>),
+}
+
+async fn handle_inflight_client_message(
+  message: Result<ClientMessage>,
+) -> Result<()> {
+  match message {
+    Ok(ClientMessage::Shutdown) => Ok(()),
+    Ok(ClientMessage::Work(_)) => {
+      bail!("remote worker received new work while an attribute was in flight")
+    },
+    Ok(ClientMessage::Setup { .. }) => bail!("remote worker setup sent twice"),
+    Err(err) => Err(err).context("reading remote worker request during work"),
   }
 }
 
