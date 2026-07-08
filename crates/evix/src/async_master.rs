@@ -17,6 +17,7 @@ use crate::{
   Config,
   EvalError,
   Event,
+  Input,
   Remote,
   remote_worker::RemoteWorker,
   worker_config::WorkerConfig,
@@ -104,6 +105,7 @@ where
   Fut: Future<Output = Result<()>>,
 {
   validate_config(&config)?;
+  warn_virtual_flake_locking(&config);
   let worker_config = WorkerConfig::from(&config);
   let specs = worker_specs(&config);
   if specs.is_empty() {
@@ -149,6 +151,29 @@ where
     shutdown_workers(workers).await?;
   }
   result
+}
+
+fn warn_virtual_flake_locking(config: &Config) {
+  if uses_virtual_flake_locking(config) {
+    warn!(
+      "non-local flake inputs are locked independently by each worker; use a \
+       local path flake with an up-to-date flake.lock for reproducible \
+       multi-worker evaluation"
+    );
+  }
+}
+
+#[cfg(feature = "flake")]
+fn uses_virtual_flake_locking(config: &Config) -> bool {
+  let Input::Flake(reference) = &config.input else {
+    return false;
+  };
+  !crate::worker::is_local_flake_reference(reference)
+}
+
+#[cfg(not(feature = "flake"))]
+fn uses_virtual_flake_locking(_config: &Config) -> bool {
+  false
 }
 
 fn validate_config(config: &Config) -> Result<()> {
