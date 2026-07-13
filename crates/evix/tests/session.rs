@@ -1,4 +1,8 @@
-use std::process;
+use std::{
+  fs,
+  process::{self, Command},
+  time::{SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{Result, anyhow};
 use evix::{Config, Error, Event, Filter, Session};
@@ -42,6 +46,7 @@ fn run() -> Result<()> {
     .block_on(async {
       stream_query_and_diff().await?;
       cancellation_drop_and_single_use().await?;
+      flake_without_lock_uses_exported_graph().await?;
       Ok(())
     })
 }
@@ -110,6 +115,73 @@ async fn cancellation_drop_and_single_use() -> Result<()> {
   drop(first);
   drop(session);
   Ok(())
+}
+
+async fn flake_without_lock_uses_exported_graph() -> Result<()> {
+  let fixture = std::env::temp_dir().join(format!(
+    "evix-flake-{}",
+    SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+  ));
+  fs::create_dir(&fixture)?;
+  fs::create_dir(fixture.join("dep"))?;
+  fs::write(
+    fixture.join("dep/flake.nix"),
+    r#"{
+  outputs = { self }: {
+    packages.x86_64-linux = {
+      recurseForDerivations = true;
+      hello = derivation {
+        name = "hello";
+        system = "x86_64-linux";
+        builder = builtins.toFile "evix-test-builder.sh" "echo ok > $out";
+      };
+    };
+  };
+}
+"#,
+  )?;
+  fs::write(
+    fixture.join("flake.nix"),
+    r#"{
+  inputs.dep.url = "path:./dep";
+  outputs = { self, dep }: {
+    packages.x86_64-linux = {
+      recurseForDerivations = true;
+      hello = dep.packages.x86_64-linux.hello;
+    };
+  };
+}
+"#,
+  )?;
+  let status = Command::new("git")
+    .arg("init")
+    .current_dir(&fixture)
+    .status()?;
+  if !status.success() {
+    return Err(anyhow!("creating flake fixture Git repository failed"));
+  }
+
+  let result = async {
+    let session = Session::open(
+      Config::flake(format!("path:{}#packages", fixture.display()))
+        .builder()
+        .workers(2)
+        .nix_option("restrict-eval", "true")
+        .build(),
+    )
+    .await?;
+    let events = collect_events(session.stream()).await?;
+    if events.into_iter().any(|event| {
+      matches!(event, Event::Derivation(derivation) if derivation.attr == "x86_64-linux.hello")
+    }) {
+      Ok(())
+    } else {
+      Err(anyhow!("missing packages.x86_64-linux.hello derivation"))
+    }
+  }
+  .await;
+  fs::remove_dir_all(&fixture)?;
+  result
 }
 
 async fn collect_events(

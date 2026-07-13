@@ -1,4 +1,6 @@
-use std::{env, mem::MaybeUninit, path::Path, sync::Arc};
+#[cfg(feature = "flake")]
+use std::{collections::BTreeSet, env, path::Path};
+use std::{mem::MaybeUninit, sync::Arc};
 
 use anyhow::{Context as _, Result, bail};
 use nix_bindings::{Context, EvalState, EvalStateBuilder, Store, Value};
@@ -6,9 +8,9 @@ use tokio::io::{BufReader, BufWriter};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tracing::{debug, trace, warn};
 
+#[cfg(feature = "flake")] use crate::Config;
 use crate::{
   AutoArg,
-  Config,
   Input,
   remote_proto::{
     ClientMessage,
@@ -50,7 +52,7 @@ pub async fn run() -> Result<()> {
   let auto_args = build_auto_args(&state, &config.auto_args)?;
   let auto_ref = auto_args.as_ref();
 
-  let root = eval_root(&ctx, &state, &config, auto_ref)?;
+  let root = eval_root(&ctx, &state, &store, &config, auto_ref)?;
 
   write_server(&mut writer, &ServerMessage::Ready).await?;
 
@@ -124,18 +126,25 @@ fn build_eval_state(
 fn eval_root<'s>(
   ctx: &Arc<Context>,
   state: &'s EvalState,
+  _store: &Store,
   config: &WorkerConfig,
   auto_args: Option<&Value<'s>>,
 ) -> Result<Value<'s>> {
   match &config.input {
     Input::Flake(flake_ref) => {
-      eval_flake(
-        ctx,
-        state,
-        flake_ref,
-        &config.override_inputs,
-        config.locked_flake_json.as_deref(),
-      )
+      #[cfg(feature = "flake")]
+      {
+        eval_flake(
+          ctx,
+          state,
+          _store,
+          flake_ref,
+          &config.override_inputs,
+          config.locked_flake_json.as_deref(),
+        )
+      }
+      #[cfg(not(feature = "flake"))]
+      eval_flake(ctx, state, flake_ref, &config.override_inputs)
     },
     Input::Expr(expr) => {
       let v = state
@@ -156,6 +165,7 @@ fn eval_root<'s>(
 fn eval_flake<'s>(
   ctx: &Arc<Context>,
   state: &'s EvalState,
+  store: &Store,
   flake_ref_str: &str,
   override_inputs: &[(String, String)],
   locked_flake_json: Option<&str>,
@@ -175,6 +185,7 @@ fn eval_flake<'s>(
   .context("parsing flake reference")?;
 
   let outputs = if let Some(json) = locked_flake_json {
+    allow_imported_flake_paths(state, store, json)?;
     let imported = ImportedLockedFlake::import_json(ctx, &fetchers, json)
       .context("importing locked flake graph")?;
     imported
@@ -211,6 +222,45 @@ fn eval_flake<'s>(
     current = next;
   }
   Ok(current)
+}
+
+/// Restore the source paths that locking whitelisted in the master's
+/// evaluation state. `callFlake` reads these paths directly, so an imported
+/// graph otherwise fails under `restrict-eval` in a fresh worker state.
+#[cfg(feature = "flake")]
+fn allow_imported_flake_paths(
+  state: &EvalState,
+  store: &Store,
+  json: &str,
+) -> Result<()> {
+  let graph: serde_json::Value =
+    serde_json::from_str(json).context("parsing locked flake graph")?;
+  let Some(paths) = graph.get("nodePaths").and_then(|paths| paths.as_object())
+  else {
+    bail!("locked flake graph is missing node paths")
+  };
+
+  let store_dir = store.store_dir().context("reading Nix store directory")?;
+  let mut roots = BTreeSet::new();
+  for path in paths.values() {
+    let path = path
+      .as_str()
+      .context("locked flake node path is not a string")?;
+    let relative = path
+      .strip_prefix(&store_dir)
+      .and_then(|path| path.strip_prefix('/'))
+      .context("locked flake node path is outside the worker store")?;
+    let name = relative
+      .split('/')
+      .next()
+      .filter(|name| !name.is_empty())
+      .context("locked flake node path is missing its store path")?;
+    roots.insert(format!("{store_dir}/{name}"));
+  }
+  for root in roots {
+    state.allow_store_path(&root)?;
+  }
+  Ok(())
 }
 
 #[cfg(feature = "flake")]
