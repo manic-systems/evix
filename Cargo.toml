@@ -8,13 +8,13 @@ edition      = "2024"
 license      = "EUPL-1.2"
 repository   = "https://github.com/manic-systems/evix"
 rust-version = "1.90.0"
-version      = "2.0.0"
+version      = "2.0.1"
 
 [workspace.dependencies]
 # Workspace components
-evix          = { path = "crates/evix", version = "2.0.0" }
-evix-daemon   = { path = "crates/evix-daemon", version = "2.0.0" }
-evix-protocol = { path = "crates/evix-protocol", version = "2.0.0" }
+evix          = { path = "crates/evix", version = "2.0.1" }
+evix-daemon   = { path = "crates/evix-daemon", version = "2.0.1" }
+evix-protocol = { path = "crates/evix-protocol", version = "2.0.1" }
 
 # Other dependencies
 anyhow = "1.0.102"
