@@ -210,7 +210,6 @@ impl WorkerProcess {
       message.push_str("\nworker stderr:\n");
       message.push_str(stderr);
     }
-    append_startup_hint(&mut message, phase);
     anyhow!(message)
   }
 }
@@ -368,18 +367,6 @@ fn trace_stderr_line(label: &str, line: &[u8], truncated: bool) {
   }
 }
 
-fn append_startup_hint(message: &mut String, phase: &str) {
-  if phase != "handshake" {
-    return;
-  }
-
-  message.push_str(
-    "\nhint: if this binary embeds evix::Session, call \
-     evix::run_worker_if_requested() at process startup so EVIX_WORKER \
-     subprocesses enter the worker protocol",
-  );
-}
-
 #[cfg(test)]
 mod tests {
   use std::sync::Mutex;
@@ -422,25 +409,6 @@ mod tests {
         }
       }
     }
-  }
-
-  #[test]
-  fn startup_hint_mentions_worker_dispatch() {
-    let mut message = String::from("worker failed");
-
-    append_startup_hint(&mut message, "handshake");
-
-    assert!(message.contains("evix::run_worker_if_requested()"));
-    assert!(message.contains("EVIX_WORKER"));
-  }
-
-  #[test]
-  fn startup_hint_is_limited_to_handshake_failures() {
-    let mut message = String::from("worker failed");
-
-    append_startup_hint(&mut message, "event");
-
-    assert!(!message.contains("run_worker_if_requested"));
   }
 
   #[test]
