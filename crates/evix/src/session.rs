@@ -37,11 +37,12 @@ use crate::{
 /// later stream/query/diff calls report the stored failure instead of retrying
 /// implicitly.
 pub struct Session {
-  config:    Config,
-  cancel:    Arc<AtomicBool>,
-  state:     Arc<RwLock<WarmState>>,
-  completed: Arc<Notify>,
-  initial:   Arc<Mutex<InitialEvaluation>>,
+  config:           Config,
+  cancel:           Arc<AtomicBool>,
+  state:            Arc<RwLock<WarmState>>,
+  completed:        Arc<Notify>,
+  initial:          Arc<Mutex<InitialEvaluation>>,
+  replay_available: AtomicBool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +61,7 @@ impl Session {
       state: Arc::new(RwLock::new(WarmState::default())),
       completed: Arc::new(Notify::new()),
       initial: Arc::new(Mutex::new(InitialEvaluation::Idle)),
+      replay_available: AtomicBool::new(true),
     })
   }
 
@@ -207,6 +209,7 @@ impl Session {
   /// fresh evaluation for each filesystem notification and diffs it against
   /// the previous warm graph.
   pub fn watch(&self) -> impl Stream<Item = Result<Diff>> + '_ {
+    self.replay_available.store(false, Ordering::Release);
     let (tx, rx) = futures_mpsc::unbounded();
     let config = self.config.clone();
     let cancel = Arc::clone(&self.cancel);
@@ -274,6 +277,7 @@ impl Session {
     &self,
     capacity: usize,
   ) -> impl Stream<Item = Result<Diff>> + '_ {
+    self.replay_available.store(false, Ordering::Release);
     let (mut tx, rx) = futures_mpsc::channel(bounded_capacity(capacity));
     let config = self.config.clone();
     let cancel = Arc::clone(&self.cancel);
@@ -372,6 +376,32 @@ impl Session {
     self.query_snapshot(filter).await
   }
 
+  /// Replay events from the completed initial evaluation without evaluating
+  /// Nix.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`Error::InitialEvaluationIncomplete`] until the initial run
+  /// completes, or [`Error::SessionReplayUnavailable`] after `watch` or a
+  /// successful `diff_once` changes the session result.
+  pub async fn replay(&self) -> Result<Vec<Event>> {
+    let state = self.state.read().await;
+    if !self.replay_available.load(Ordering::Acquire) {
+      return Err(Error::SessionReplayUnavailable);
+    }
+    if !state.completed {
+      if let Some(error) = &state.error {
+        return Err(Error::EvaluationFailed {
+          message: error.clone(),
+        });
+      }
+      return Err(Error::InitialEvaluationIncomplete {
+        operation: "replay",
+      });
+    }
+    Ok(state.events.clone())
+  }
+
   /// Perform one full re-evaluation and diff it against the warm graph.
   pub async fn diff_once(&self) -> Result<Diff> {
     let previous = {
@@ -401,6 +431,7 @@ impl Session {
       state.errors = errors;
       state.completed = true;
       state.error = None;
+      self.replay_available.store(false, Ordering::Release);
     }
     Ok(diff)
   }
@@ -459,20 +490,31 @@ async fn evaluate_initial<F, Fut>(
   cancel: Arc<AtomicBool>,
   state: Arc<RwLock<WarmState>>,
   completed: Arc<Notify>,
-  on_event: F,
+  mut on_event: F,
 ) -> AnyhowResult<RunOutcome>
 where
   F: FnMut(Event) -> Fut + Send + 'static,
   Fut: Future<Output = AnyhowResult<()>>,
 {
   debug!("starting session evaluation");
-  let result = run::evaluate_async(config, Arc::clone(&cancel), on_event).await;
+  let events = Arc::new(Mutex::new(Vec::new()));
+  let recorded_events = Arc::clone(&events);
+  let result = run::evaluate_async(config, Arc::clone(&cancel), move |event| {
+    recorded_events
+      .lock()
+      .expect("session event cache poisoned")
+      .push(event.clone());
+    on_event(event)
+  })
+  .await;
 
   match result {
     Ok((graph, errors, RunOutcome::Completed)) => {
       let mut state = state.write().await;
       state.graph = graph;
       state.errors = errors;
+      state.events =
+        events.lock().expect("session event cache poisoned").clone();
       state.completed = true;
       state.error = None;
       completed.notify_waiters();
@@ -631,6 +673,62 @@ mod tests {
   }
 
   #[test]
+  fn replay_returns_completed_events_without_starting_evaluation() {
+    tokio::runtime::Builder::new_current_thread()
+      .enable_time()
+      .build()
+      .unwrap()
+      .block_on(async {
+        let session = Session::open(Config::default()).await.unwrap();
+        {
+          let mut state = session.state.write().await;
+          state.events.push(Event::AttrSet {
+            attr:      "jobs".into(),
+            attr_path: vec!["jobs".into()],
+            attrs:     vec!["hello".into()],
+          });
+          state.completed = true;
+        }
+
+        let events = session.replay().await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(
+          matches!(&events[0], Event::AttrSet { attr, .. } if attr == "jobs")
+        );
+
+        session.replay_available.store(false, Ordering::Release);
+        assert!(matches!(
+          session.replay().await,
+          Err(Error::SessionReplayUnavailable)
+        ));
+      });
+  }
+
+  #[test]
+  fn replay_rechecks_availability_after_waiting_for_state() {
+    tokio::runtime::Builder::new_current_thread()
+      .build()
+      .unwrap()
+      .block_on(async {
+        let session = Session::open(Config::default()).await.unwrap();
+        let mut state = session.state.write().await;
+        state.completed = true;
+        state.events.push(Event::AttrSet {
+          attr:      "jobs".into(),
+          attr_path: vec!["jobs".into()],
+          attrs:     vec![],
+        });
+
+        let mut replay = Box::pin(session.replay());
+        assert!(futures_util::poll!(&mut replay).is_pending());
+        session.replay_available.store(false, Ordering::Release);
+        drop(state);
+
+        assert!(matches!(replay.await, Err(Error::SessionReplayUnavailable)));
+      });
+  }
+
+  #[test]
   fn failed_initial_evaluation_is_reported_after_stream_consumed() {
     let runtime = tokio::runtime::Builder::new_current_thread()
       .enable_io()
@@ -668,11 +766,12 @@ mod tests {
       .build()
       .unwrap();
     let session = Session {
-      config:    Config::default(),
-      cancel:    Arc::new(AtomicBool::new(false)),
-      state:     Arc::new(RwLock::new(WarmState::default())),
-      completed: Arc::new(Notify::new()),
-      initial:   Arc::new(Mutex::new(InitialEvaluation::Finished)),
+      config:           Config::default(),
+      cancel:           Arc::new(AtomicBool::new(false)),
+      state:            Arc::new(RwLock::new(WarmState::default())),
+      completed:        Arc::new(Notify::new()),
+      initial:          Arc::new(Mutex::new(InitialEvaluation::Finished)),
+      replay_available: AtomicBool::new(true),
     };
     let mut stream = Box::pin(session.stream());
 
@@ -688,11 +787,12 @@ mod tests {
       .build()
       .unwrap();
     let session = Session {
-      config:    Config::default(),
-      cancel:    Arc::new(AtomicBool::new(false)),
-      state:     Arc::new(RwLock::new(WarmState::default())),
-      completed: Arc::new(Notify::new()),
-      initial:   Arc::new(Mutex::new(InitialEvaluation::Finished)),
+      config:           Config::default(),
+      cancel:           Arc::new(AtomicBool::new(false)),
+      state:            Arc::new(RwLock::new(WarmState::default())),
+      completed:        Arc::new(Notify::new()),
+      initial:          Arc::new(Mutex::new(InitialEvaluation::Finished)),
+      replay_available: AtomicBool::new(true),
     };
     let mut stream = Box::pin(session.stream_bounded(1));
 
@@ -711,11 +811,12 @@ mod tests {
   #[test]
   fn cancel_sets_session_cancellation_flag() {
     let session = Session {
-      config:    Config::default(),
-      cancel:    Arc::new(AtomicBool::new(false)),
-      state:     Arc::new(RwLock::new(WarmState::default())),
-      completed: Arc::new(Notify::new()),
-      initial:   Arc::new(Mutex::new(InitialEvaluation::Idle)),
+      config:           Config::default(),
+      cancel:           Arc::new(AtomicBool::new(false)),
+      state:            Arc::new(RwLock::new(WarmState::default())),
+      completed:        Arc::new(Notify::new()),
+      initial:          Arc::new(Mutex::new(InitialEvaluation::Idle)),
+      replay_available: AtomicBool::new(true),
     };
 
     session.cancel();
