@@ -75,6 +75,43 @@ fn remote_worker_consumes_shared_eval_queue() {
   assert!(stdout.contains(r#""name":"evix-remote""#), "{stdout}");
 }
 
+#[test]
+fn derivation_outputs_carry_store_paths() {
+  let output = evix()
+    .args([
+      "eval",
+      "--no-daemon",
+      "--expr",
+      "let system = builtins.currentSystem; in { recurseForDerivations = \
+       true; pkg = derivation { name = \"evix-outputs\"; inherit system; \
+       builder = \"/bin/sh\"; args = [ \"-c\" \"echo ok > $out\" ]; outputs = \
+       [ \"out\" \"dev\" ]; }; }",
+    ])
+    .output()
+    .expect("run evix");
+
+  assert!(
+    output.status.success(),
+    "status: {}\nstderr:\n{}",
+    output.status,
+    String::from_utf8_lossy(&output.stderr)
+  );
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  let line = stdout
+    .lines()
+    .find(|line| line.contains(r#""drvPath""#))
+    .unwrap_or_else(|| panic!("no derivation event\n{stdout}"));
+  let event: serde_json::Value =
+    serde_json::from_str(line).expect("parse derivation event");
+  for name in ["out", "dev"] {
+    let path = event["outputs"][name].as_str();
+    assert!(
+      path.is_some_and(|path| path.starts_with("/nix/store/")),
+      "output {name} is {path:?}\n{stdout}"
+    );
+  }
+}
+
 fn unused_loopback_endpoint() -> String {
   let listener = TcpListener::bind("127.0.0.1:0").expect("bind test port");
   let addr = listener.local_addr().expect("read test port");

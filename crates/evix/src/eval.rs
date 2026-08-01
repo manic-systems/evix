@@ -162,7 +162,7 @@ fn make_job(
     .get_attr("system")
     .and_then(|v| v.as_string())
     .unwrap_or_default();
-  let outputs = output_paths(value);
+  let outputs = output_paths(store, &drv_path);
 
   let meta = if options.meta { read_meta(value) } else { None };
   let constituents = read_constituents(value);
@@ -338,9 +338,7 @@ fn read_input_drvs(
   // keys them by store-relative basename. Re-add the store prefix so keys are
   // absolute `.drv` paths, and expose the value as the output-name list to
   // match the `nix-eval-jobs` `inputDrvs` contract (`{drv: ["out", ...]}`).
-  let store_dir = store
-    .store_dir()
-    .unwrap_or_else(|_| "/nix/store".to_string());
+  let store_dir = store_dir(store);
   // A derivation with no input derivations (e.g. a fixed-output fetch)
   // legitimately has no `inputs.drvs`, so an absent key is normal and not
   // logged.
@@ -352,11 +350,7 @@ fn read_input_drvs(
     return map;
   };
   for (key, value) in drvs {
-    let full_path = if key.starts_with('/') {
-      key.clone()
-    } else {
-      format!("{store_dir}/{key}")
-    };
+    let full_path = absolute_store_path(&store_dir, key);
     let Some(outputs) = input_drv_outputs(value) else {
       warn!(drv_path = %full_path, "failed to parse inputDrvs outputs");
       continue;
@@ -371,52 +365,72 @@ fn input_drv_outputs(value: &serde_json::Value) -> Option<Vec<String>> {
   serde_json::from_value(outputs.clone()).ok()
 }
 
-/// Collect each output's store path from a derivation value.
+/// Read each output's store path from the derivation's `.drv`.
+///
+/// `outPath` carries derivation context, and the only string accessor the C API
+/// exposes realises it, which tries to build the derivation and fails.
 ///
 /// # Returns
 ///
-/// A map from output name to its resolved store path, or `None` when resolution
-/// fails for an individual output.
-fn output_paths(value: &Value<'_>) -> BTreeMap<String, Option<String>> {
+/// A map from output name to store path, [`None`] for a floating
+/// content-addressed output whose path is not known until it is built.
+fn output_paths(
+  store: &Store,
+  drv_path: &StorePath,
+) -> BTreeMap<String, Option<String>> {
   let mut map = BTreeMap::new();
-  let Ok(list) = value.get_attr("outputs") else {
+  let drv = match store.read_derivation(drv_path) {
+    Ok(drv) => drv,
+    Err(e) => {
+      warn!(error = %e, "failed to read derivation for outputs");
+      return map;
+    },
+  };
+  let json = match drv.to_json() {
+    Ok(json) => json,
+    Err(e) => {
+      warn!(error = %e, "failed to serialize derivation for outputs");
+      return map;
+    },
+  };
+  let parsed = match serde_json::from_str::<serde_json::Value>(&json) {
+    Ok(parsed) => parsed,
+    Err(e) => {
+      warn!(error = %e, "failed to parse derivation JSON for outputs");
+      return map;
+    },
+  };
+  let Some(outputs) =
+    parsed.get("outputs").and_then(serde_json::Value::as_object)
+  else {
+    warn!("derivation JSON is missing its outputs");
     return map;
   };
-  let Ok(len) = list.list_len() else {
-    return map;
-  };
-  for i in 0..len {
-    let Ok(name_val) = list.list_get(i) else {
-      continue;
-    };
-    let Ok(name) = name_val.as_string() else {
-      continue;
-    };
-    let path = output_path_for(value, &name);
-    map.insert(name, path);
+
+  let store_dir = store_dir(store);
+  for (name, output) in outputs {
+    let path = output
+      .get("path")
+      .and_then(serde_json::Value::as_str)
+      .map(|path| absolute_store_path(&store_dir, path));
+    map.insert(name.clone(), path);
   }
   map
 }
 
-/// Resolve the store path of a single named output.
-///
-/// Each output is exposed on the derivation as an attribute whose `outPath` is
-/// the store path; for non-standard derivations the attribute is coerced
-/// directly as a string or path.
-///
-/// # Returns
-///
-/// The output's store path, or `None` if the output attribute is missing or
-/// cannot be coerced to a path.
-fn output_path_for(value: &Value<'_>, name: &str) -> Option<String> {
-  let out = value.get_attr(name).ok()?;
-  if let Ok(path) = out.get_attr("outPath").and_then(|v| v.as_string()) {
-    return Some(path);
+fn store_dir(store: &Store) -> String {
+  store
+    .store_dir()
+    .unwrap_or_else(|_| "/nix/store".to_string())
+}
+
+/// `nix_derivation_to_json` keys paths by store-relative basename.
+fn absolute_store_path(store_dir: &str, path: &str) -> String {
+  if path.starts_with('/') {
+    path.to_owned()
+  } else {
+    format!("{store_dir}/{path}")
   }
-  if let Ok(s) = out.as_string() {
-    return Some(s);
-  }
-  out.as_path().ok().map(|p| p.to_string_lossy().into_owned())
 }
 
 /// Create a direct Nix GC root symlink for `drv_path`.
