@@ -15,6 +15,9 @@ use crate::{EvalError, Event};
 
 const NIX_GCROOTS_DIR: &str = "/nix/var/nix/gcroots";
 
+/// Attribute-path length at which traversal stops descending.
+const MAX_ATTR_DEPTH: usize = 64;
+
 #[derive(Debug, Clone)]
 pub(crate) struct EvalOptions {
   pub(crate) force_recurse:   bool,
@@ -74,6 +77,16 @@ pub fn process_attr<'s>(
           })
         },
       }
+    },
+    Ok(None) if path.len() >= MAX_ATTR_DEPTH => {
+      Event::Error(EvalError {
+        attr,
+        attr_path: path.to_vec(),
+        error: format!(
+          "attrset exceeds the maximum traversal depth of {MAX_ATTR_DEPTH}"
+        ),
+        fatal: false,
+      })
     },
     Ok(None) => {
       let children = collect_recurse(&value, path, options.force_recurse);

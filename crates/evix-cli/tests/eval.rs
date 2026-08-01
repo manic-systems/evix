@@ -1,8 +1,9 @@
 use std::{
+  io::Read as _,
   net::{TcpListener, TcpStream},
-  process::{Child, Command, Stdio},
+  process::{Child, Command, Output, Stdio},
   thread,
-  time::Duration,
+  time::{Duration, Instant},
 };
 
 fn evix() -> Command {
@@ -109,6 +110,70 @@ fn derivation_outputs_carry_store_paths() {
       path.is_some_and(|path| path.starts_with("/nix/store/")),
       "output {name} is {path:?}\n{stdout}"
     );
+  }
+}
+
+#[test]
+fn cyclic_attrsets_stop_at_the_traversal_depth_limit() {
+  let output = run_with_timeout(
+    evix().args([
+      "eval",
+      "--no-daemon",
+      "--expr",
+      "let a = { recurseForDerivations = true; loop = a; }; in a",
+    ]),
+    Duration::from_secs(60),
+  );
+
+  assert!(
+    output.status.success(),
+    "status: {}\nstderr:\n{}",
+    output.status,
+    String::from_utf8_lossy(&output.stderr)
+  );
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  assert!(stdout.contains("maximum traversal depth"), "{stdout}");
+}
+
+/// Run `command` to completion, killing it once `limit` elapses. The pipes
+/// drain on threads because a full one blocks the child and looks like a hang.
+fn run_with_timeout(command: &mut Command, limit: Duration) -> Output {
+  let mut child = command
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .expect("spawn evix");
+  let mut child_stdout = child.stdout.take().expect("evix stdout");
+  let mut child_stderr = child.stderr.take().expect("evix stderr");
+  let stdout = thread::spawn(move || {
+    let mut buf = Vec::new();
+    let _ = child_stdout.read_to_end(&mut buf);
+    buf
+  });
+  let stderr = thread::spawn(move || {
+    let mut buf = Vec::new();
+    let _ = child_stderr.read_to_end(&mut buf);
+    buf
+  });
+
+  let deadline = Instant::now() + limit;
+  let status = loop {
+    match child.try_wait().expect("poll evix") {
+      Some(status) => break status,
+      None if Instant::now() >= deadline => {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("evix did not terminate within {limit:?}");
+      },
+      None => thread::sleep(Duration::from_millis(50)),
+    }
+  };
+
+  Output {
+    status,
+    stdout: stdout.join().expect("drain evix stdout"),
+    stderr: stderr.join().expect("drain evix stderr"),
   }
 }
 
