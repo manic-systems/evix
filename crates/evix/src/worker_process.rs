@@ -42,7 +42,7 @@ pub(crate) struct WorkerProcess {
   proc:              Child,
   stdin:             Compat<ChildStdin>,
   stdout:            Compat<BufReader<ChildStdout>>,
-  stderr_task:       JoinHandle<Result<String>>,
+  stderr_task:       Option<JoinHandle<Result<String>>>,
   _nix_options_file: Option<NixOptionsFile>,
 }
 
@@ -105,7 +105,7 @@ impl WorkerProcess {
       proc: child,
       stdin,
       stdout,
-      stderr_task,
+      stderr_task: Some(stderr_task),
       _nix_options_file: nix_options_file,
     };
     worker.read_ready().await?;
@@ -130,18 +130,30 @@ impl WorkerProcess {
   pub(crate) async fn stop(&mut self) {
     let _ = write_client(&mut self.stdin, &ClientMessage::Shutdown).await;
     let _ = self.proc.wait().await;
-    let _ = (&mut self.stderr_task).await;
+    self.take_stderr().await;
   }
 
   pub(crate) async fn abort(&mut self) {
     let _ = self.proc.start_kill();
     let _ = self.proc.wait().await;
-    let _ = (&mut self.stderr_task).await;
+    self.take_stderr().await;
   }
 
   pub(crate) async fn wait_for_restart(&mut self) {
     let _ = self.proc.wait().await;
-    let _ = (&mut self.stderr_task).await;
+    self.take_stderr().await;
+  }
+
+  /// Await the stderr capture task and return its bounded tail.
+  ///
+  /// [`exit_error`](Self::exit_error) drains a failed worker before the caller
+  /// decides whether to stop or abort it, and a [`JoinHandle`] panics when
+  /// polled after completion.
+  async fn take_stderr(&mut self) -> String {
+    let Some(task) = self.stderr_task.take() else {
+      return String::new();
+    };
+    task.await.ok().and_then(Result::ok).unwrap_or_default()
   }
 
   async fn read_ready(&mut self) -> Result<()> {
@@ -193,11 +205,7 @@ impl WorkerProcess {
     source: anyhow::Error,
   ) -> anyhow::Error {
     let status = self.proc.wait().await.ok();
-    let stderr = (&mut self.stderr_task)
-      .await
-      .ok()
-      .and_then(Result::ok)
-      .unwrap_or_default();
+    let stderr = self.take_stderr().await;
     let stderr = stderr.trim();
     let mut message = format!(
       "evix worker {} failed while reading {phase} for {attr}: {source}",
@@ -409,6 +417,47 @@ mod tests {
         }
       }
     }
+  }
+
+  fn stub_worker(label: &str) -> WorkerProcess {
+    let mut child = Command::new("cat")
+      .stdin(Stdio::piped())
+      .stdout(Stdio::piped())
+      .stderr(Stdio::piped())
+      .kill_on_drop(true)
+      .spawn()
+      .expect("spawn stub worker");
+    let stdin = child.stdin.take().expect("stub stdin").compat_write();
+    let stdout =
+      BufReader::new(child.stdout.take().expect("stub stdout")).compat();
+    let stderr = child.stderr.take().expect("stub stderr");
+    let stderr_label = label.to_owned();
+    let stderr_task =
+      tokio::spawn(async move { capture_stderr(stderr_label, stderr).await });
+
+    WorkerProcess {
+      label: label.to_owned(),
+      proc: child,
+      stdin,
+      stdout,
+      stderr_task: Some(stderr_task),
+      _nix_options_file: None,
+    }
+  }
+
+  #[test]
+  fn lifecycle_calls_are_idempotent_after_stderr_is_drained() {
+    tokio::runtime::Builder::new_current_thread()
+      .enable_io()
+      .build()
+      .unwrap()
+      .block_on(async {
+        let mut worker = stub_worker("idempotent");
+
+        worker.abort().await;
+        worker.stop().await;
+        worker.wait_for_restart().await;
+      });
   }
 
   #[test]
