@@ -8,7 +8,7 @@
     if system == "aarch64-linux"
     then "x86_64-linux"
     else "aarch64-linux";
-  localFlake = ''
+  localFlake = /* nix */ ''
     {
       outputs = { self }: {
         hydraJobs.${system} = {
@@ -23,7 +23,7 @@
       };
     }
   '';
-  remoteExpr = ''
+  remoteExpr = /* nix */ ''
     {
       recurseForDerivations = true;
       remote = {
@@ -37,7 +37,7 @@
       };
     }
   '';
-  distributedExpr = ''
+  distributedExpr = /* nix */ ''
     {
       recurseForDerivations = true;
       groupA = {
@@ -75,7 +75,7 @@
       };
     }
   '';
-  routedRemoteExpr = ''
+  routedRemoteExpr = /* nix */ ''
     {
       recurseForDerivations = true;
       native = {
@@ -131,7 +131,7 @@ in
       };
     };
 
-    testScript = ''
+    testScript = /* python */ ''
       import os
       import shlex
 
@@ -141,7 +141,7 @@ in
       REMOTE_EXPR = ${builtins.toJSON remoteExpr}
       DISTRIBUTED_EXPR = ${builtins.toJSON distributedExpr}
       ROUTED_REMOTE_EXPR = ${builtins.toJSON routedRemoteExpr}
-      CLIENT_EXPR = ${builtins.toJSON ''
+      CLIENT_EXPR = ${builtins.toJSON /* nix */ ''
         { label }: {
           recurseForDerivations = true;
           client = (derivation {
