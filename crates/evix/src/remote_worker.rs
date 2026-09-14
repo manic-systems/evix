@@ -449,8 +449,6 @@ fn set_tcp_keepalive(_stream: &TcpStream) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-  use tokio_util::compat::TokioAsyncReadCompatExt as _;
-
   use super::*;
   use crate::Config;
 
