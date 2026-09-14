@@ -1,4 +1,4 @@
-{
+self: {
   config,
   pkgs,
   lib,
@@ -13,7 +13,9 @@ in {
   options.services.evix = {
     enable = mkEnableOption "evix Nix evaluator service and CLI";
 
-    package = mkPackageOption pkgs "evix" {};
+    package = mkPackageOption self.packages.${pkgs.stdenv.hostPlatform.system} "evix" {
+      pkgsText = "self.packages.\${pkgs.stdenv.hostPlatform.system}";
+    };
 
     daemon = {
       enable = mkEnableOption "the evix daemon user service";
@@ -22,7 +24,7 @@ in {
         type = nullOr str;
         default = null;
         example = "%t/evix.sock";
-        description = "Optional `EVIX_SOCKET` path for the user daemon.";
+        description = "Optional {env}`EVIX_SOCKET` path for the user daemon.";
       };
     };
   };
