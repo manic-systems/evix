@@ -1,5 +1,5 @@
 {
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs?ref=nixos-unstable";
+  inputs.nixpkgs.url = "https://channels.nixos.org/nixos-unstable/nixexprs.tar.zst";
 
   outputs = {
     self,
@@ -23,7 +23,7 @@
     });
 
     nixosModules = {
-      default = ./nix/module.nix;
+      default = import ./nix/module.nix self;
       evix = self.nixosModules.default;
     };
 
