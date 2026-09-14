@@ -62,7 +62,7 @@ dependencies = [
  "regex",
  "rustc-hash",
  "shlex",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "evix"
-version = "2.0.2"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "capnp",
@@ -204,7 +204,7 @@ dependencies = [
 
 [[package]]
 name = "evix-cli"
-version = "2.0.2"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "color-eyre",
@@ -221,7 +221,7 @@ dependencies = [
 
 [[package]]
 name = "evix-daemon"
-version = "2.0.2"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "evix",
@@ -238,7 +238,7 @@ dependencies = [
 
 [[package]]
 name = "evix-protocol"
-version = "2.0.2"
+version = "2.1.0"
 dependencies = [
  "serde",
  "serde_json",
