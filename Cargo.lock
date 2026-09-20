@@ -139,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "evix"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "anyhow",
  "capnp",
@@ -161,7 +161,7 @@ dependencies = [
 
 [[package]]
 name = "evix-cli"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "anyhow",
  "evix",
@@ -178,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "evix-daemon"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "anyhow",
  "evix",
@@ -195,7 +195,7 @@ dependencies = [
 
 [[package]]
 name = "evix-protocol"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "serde",
  "serde_json",
