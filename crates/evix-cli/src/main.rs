@@ -44,21 +44,14 @@ fn main() {
   }
 }
 
-fn run_cli() -> color_eyre::Result<()> {
-  color_eyre::install()?;
-
+fn run_cli() -> misstep::Result<()> {
   let (verbosity, plan) = parse_plan().map_err(report)?;
   init_tracing_subscriber(verbosity);
   run_plan(plan).map_err(report)
 }
 
-fn report(err: anyhow::Error) -> color_eyre::Report {
-  let mut message = err.to_string();
-  for cause in err.chain().skip(1) {
-    message.push_str("\n\nCaused by:\n    ");
-    message.push_str(&cause.to_string());
-  }
-  color_eyre::eyre::eyre!("{message}")
+fn report(err: anyhow::Error) -> misstep::Report {
+  misstep::Report::from_boxed(err.into_boxed_dyn_error())
 }
 
 fn run_plan(plan: CommandPlan) -> Result<()> {
