@@ -25,7 +25,7 @@ evaluation is the only cost.
 $ bench/equiv.sh            # sweeps a few breadth/depth shapes
 
 # Or more fine grained
-$bench/equiv.sh 6 3        # one shape
+$ bench/equiv.sh 6 3        # one shape
 ```
 
 Asserts two invariants and exits non-zero on any divergence:
@@ -46,8 +46,9 @@ attribute graphs and worker topologies, in `crates/evix/src/async_master.rs`
 ## `bench.sh`: performance
 
 ```bash
-bench/bench.sh           # breadth=6 depth=3  (1296 derivations)
-bench/bench.sh 5 3
+# Measure performance with fine-grained fixtures
+$ bench/bench.sh           # breadth=6 depth=3  (1296 derivations)
+$ bench/bench.sh 5 3
 ```
 
 Runs `hyperfine` over evix at 1/4/8 local-only workers, evix remote-only
