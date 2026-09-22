@@ -47,6 +47,7 @@ tracing-subscriber = { version = "0.3.23", features = [ "env-filter" ] }
 
 [profile.release]
 codegen-units = 1
-lto           = true
+lto           = "thin"
+opt-level     = 3
 panic         = "abort"
 strip         = "symbols"
