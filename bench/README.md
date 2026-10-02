@@ -54,7 +54,6 @@ $ bench/bench.sh 5 3
 Runs `hyperfine` over evix at 1/4/8 local-only workers, evix remote-only
 distributed evaluation, evix mixed local+remote distributed evaluation,
 daemon-backed cold prewarming, warm replay of a completed daemon event stream,
-warm full-graph daemon queries, and nix-eval-jobs. These commands produce the
-same full result, so their relative timings are comparable. The `hyperfine`
-warmup materializes replay's cached NDJSON, so the replay result measures
-subsequent calls. Writes `bench/results.md`.
+warm full-graph daemon queries, filtered warm daemon queries, and nix-eval-jobs.
+Queries print only derivations, while evaluation and replay also print attrset
+and error events. Writes `bench/results.md`.
