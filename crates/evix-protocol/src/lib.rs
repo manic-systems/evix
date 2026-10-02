@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 #[doc(hidden)] pub mod serde_config;
 
-pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
+pub const DAEMON_PROTOCOL_VERSION: u32 = 2;
 pub const DEFAULT_ITEM_TIMEOUT_SECONDS: u64 = 30 * 60;
 
 /// Input source for a Nix evaluation.
@@ -367,6 +367,11 @@ pub enum Request {
     protocol_version: u32,
     config:           Config,
   },
+  Replay {
+    #[serde(rename = "protocolVersion")]
+    protocol_version: u32,
+    config:           Config,
+  },
   Watch {
     #[serde(rename = "protocolVersion")]
     protocol_version: u32,
@@ -390,6 +395,15 @@ impl Request {
   #[must_use]
   pub fn eval(config: &Config) -> Self {
     Self::Eval {
+      protocol_version: DAEMON_PROTOCOL_VERSION,
+      config:           config.clone(),
+    }
+  }
+
+  /// Create an evaluation request that replays a completed daemon session.
+  #[must_use]
+  pub fn replay(config: &Config) -> Self {
+    Self::Replay {
       protocol_version: DAEMON_PROTOCOL_VERSION,
       config:           config.clone(),
     }
@@ -423,6 +437,9 @@ impl Request {
   pub fn validate_protocol(&self) -> Result<(), ProtocolVersionError> {
     let actual = match self {
       Self::Eval {
+        protocol_version, ..
+      }
+      | Self::Replay {
         protocol_version, ..
       }
       | Self::Watch {
@@ -468,10 +485,20 @@ impl std::error::Error for ProtocolVersionError {}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Response {
-  Event { event: Event },
-  Diff { diff: Diff },
+  Event {
+    event: Event,
+  },
+  /// Cached newline-delimited event output from a replay request.
+  Replay {
+    lines: Vec<String>,
+  },
+  Diff {
+    diff: Diff,
+  },
   Done,
-  Error { message: String },
+  Error {
+    message: String,
+  },
 }
 
 impl Response {
@@ -511,6 +538,16 @@ mod tests {
     let value = serde_json::to_value(Request::eval(&Config::default()))
       .expect("serialize request");
 
+    assert_eq!(value["protocolVersion"], DAEMON_PROTOCOL_VERSION);
+    assert!(value.get("replay").is_none());
+  }
+
+  #[test]
+  fn replay_request_serializes_as_its_own_operation() {
+    let value = serde_json::to_value(Request::replay(&Config::default()))
+      .expect("serialize replay request");
+
+    assert_eq!(value["type"], "replay");
     assert_eq!(value["protocolVersion"], DAEMON_PROTOCOL_VERSION);
   }
 

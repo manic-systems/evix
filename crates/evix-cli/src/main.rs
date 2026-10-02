@@ -60,13 +60,20 @@ fn run_plan(plan: CommandPlan) -> Result<()> {
       config,
       socket,
       use_daemon,
+      replay,
     } => {
       if use_daemon {
-        run_client_or_local(
-          daemon_request(Request::eval(&wire_config(&config)))?,
-          socket,
-          || run_local_eval(&config),
-        )
+        let request = if replay {
+          Request::replay(&wire_config(&config))
+        } else {
+          Request::eval(&wire_config(&config))
+        };
+        let request = daemon_request(request)?;
+        if replay {
+          run_daemon_only(request, socket)
+        } else {
+          run_client_or_local(request, socket, || run_local_eval(&config))
+        }
       } else {
         run_local_eval(&config)
       }
@@ -120,6 +127,7 @@ fn run_plan(plan: CommandPlan) -> Result<()> {
 fn daemon_request(request: Request) -> Result<Request> {
   Ok(match request {
     Request::Eval { config, .. } => Request::eval(&daemon_config(config)?),
+    Request::Replay { config, .. } => Request::replay(&daemon_config(config)?),
     Request::Watch { config, .. } => Request::watch(&daemon_config(config)?),
     Request::Query { config, filter, .. } => {
       Request::query(&daemon_config(config)?, &filter)
@@ -235,6 +243,13 @@ fn run_daemon_request(mut stream: UnixStream, request: &Request) -> Result<()> {
           == OutputWrite::Closed
         {
           return Ok(());
+        }
+      },
+      Response::Replay { lines } => {
+        for line in lines {
+          if write_output_line(&mut stdout, &line)? == OutputWrite::Closed {
+            return Ok(());
+          }
         }
       },
       Response::Diff { diff } => {

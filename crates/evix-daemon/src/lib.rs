@@ -1,7 +1,7 @@
 use std::{
   env,
   fs::{self, OpenOptions},
-  io::{BufRead, BufReader, Write},
+  io::{BufRead, BufReader, BufWriter, Write},
   os::{
     fd::{AsRawFd as _, RawFd},
     unix::{
@@ -33,6 +33,8 @@ use session_cache::DaemonState;
 
 const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONNECTIONS: usize = 64;
+// Keep replay responses bounded while avoiding one protocol message per event.
+const REPLAY_LINES_PER_RESPONSE: usize = 128;
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 static SHUTDOWN_SIGNAL_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
@@ -625,6 +627,9 @@ fn handle_connection(
       Request::Eval { config, .. } => {
         handle_eval(&state, &mut stream, config.into()).await
       },
+      Request::Replay { config, .. } => {
+        handle_replay(&state, &mut stream, config.into()).await
+      },
       Request::Watch { config, .. } => {
         handle_watch(&state, &mut stream, config.into()).await
       },
@@ -743,6 +748,21 @@ async fn handle_eval(
   write_response(stream, &Response::Done)
 }
 
+async fn handle_replay(
+  state: &DaemonState,
+  stream: &mut UnixStream,
+  config: Config,
+) -> Result<()> {
+  let lines = state.replay_lines(&config).await?;
+  let mut writer = BufWriter::new(stream);
+  for lines in lines.chunks(REPLAY_LINES_PER_RESPONSE) {
+    write_response(&mut writer, &Response::Replay {
+      lines: lines.to_vec(),
+    })?;
+  }
+  write_response(&mut writer, &Response::Done)
+}
+
 async fn handle_watch(
   state: &DaemonState,
   stream: &mut UnixStream,
@@ -781,11 +801,12 @@ async fn handle_diff(
   let session = state.warm_session(&config)?;
   session.require_completed().await?;
   let diff = session.diff_once().await?;
+  state.clear_replay(&config)?;
   write_response(stream, &Response::diff(&diff))?;
   write_response(stream, &Response::Done)
 }
 
-fn write_response(stream: &mut UnixStream, response: &Response) -> Result<()> {
+fn write_response<W: Write>(stream: &mut W, response: &Response) -> Result<()> {
   serde_json::to_writer(&mut *stream, response)?;
   writeln!(stream)?;
   stream.flush()?;

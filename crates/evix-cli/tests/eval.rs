@@ -1,9 +1,10 @@
 use std::{
   io::Read as _,
   net::{TcpListener, TcpStream},
-  process::{Child, Command, Output, Stdio},
+  path::{Path, PathBuf},
+  process::{self, Child, Command, Output, Stdio},
   thread,
-  time::{Duration, Instant},
+  time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 fn evix() -> Command {
@@ -177,6 +178,57 @@ fn run_with_timeout(command: &mut Command, limit: Duration) -> Output {
   }
 }
 
+#[test]
+fn daemon_replay_matches_eval_and_diff_invalidates_it() {
+  let socket = temporary_socket_path();
+  let _daemon = spawn_daemon(&socket);
+  wait_for_socket(&socket);
+  let socket = socket.to_str().expect("socket path is UTF-8");
+  let expression = "{ recurseForDerivations = true; hello = { \
+                    recurseForDerivations = true; leaf = 1; }; }";
+
+  let initial = evix()
+    .args(["eval", "--socket", socket, "--expr", expression])
+    .output()
+    .expect("run daemon evaluation");
+  assert!(
+    initial.status.success(),
+    "stderr:\n{}",
+    String::from_utf8_lossy(&initial.stderr)
+  );
+
+  let replay = evix()
+    .args(["eval", "--replay", "--socket", socket, "--expr", expression])
+    .output()
+    .expect("run replay");
+  assert!(
+    replay.status.success(),
+    "stderr:\n{}",
+    String::from_utf8_lossy(&replay.stderr)
+  );
+  assert_eq!(replay.stdout, initial.stdout);
+
+  let diff = evix()
+    .args(["diff", "--socket", socket, "--expr", expression])
+    .output()
+    .expect("run diff");
+  assert!(
+    diff.status.success(),
+    "stderr:\n{}",
+    String::from_utf8_lossy(&diff.stderr)
+  );
+
+  let replay_after_diff = evix()
+    .args(["eval", "--replay", "--socket", socket, "--expr", expression])
+    .output()
+    .expect("run replay after diff");
+  assert!(!replay_after_diff.status.success());
+  assert!(
+    String::from_utf8_lossy(&replay_after_diff.stderr)
+      .contains("no replayable completed evaluation")
+  );
+}
+
 fn unused_loopback_endpoint() -> String {
   let listener = TcpListener::bind("127.0.0.1:0").expect("bind test port");
   let addr = listener.local_addr().expect("read test port");
@@ -194,6 +246,24 @@ fn spawn_worker(endpoint: &str, token: &str) -> Child {
     .expect("spawn evix worker")
 }
 
+fn spawn_daemon(socket: &Path) -> DaemonGuard {
+  DaemonGuard {
+    child:  evix()
+      .args([
+        "daemon",
+        "--foreground",
+        "--socket",
+        socket.to_str().expect("socket path is UTF-8"),
+      ])
+      .stdin(Stdio::null())
+      .stdout(Stdio::null())
+      .stderr(Stdio::piped())
+      .spawn()
+      .expect("spawn daemon"),
+    socket: socket.to_owned(),
+  }
+}
+
 fn wait_for_worker(endpoint: &str) {
   for _ in 0..100 {
     if TcpStream::connect(endpoint).is_ok() {
@@ -204,7 +274,39 @@ fn wait_for_worker(endpoint: &str) {
   panic!("worker did not listen on {endpoint}");
 }
 
+fn wait_for_socket(socket: &Path) {
+  for _ in 0..100 {
+    if socket.exists() {
+      return;
+    }
+    thread::sleep(Duration::from_millis(50));
+  }
+  panic!("daemon did not create socket at {}", socket.display());
+}
+
+fn temporary_socket_path() -> PathBuf {
+  let nanos = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .expect("system time before UNIX epoch")
+    .as_nanos();
+  std::env::temp_dir()
+    .join(format!("evix-daemon-{}-{nanos}.sock", process::id()))
+}
+
 fn stop_worker(worker: &mut Child) {
   let _ = worker.kill();
   let _ = worker.wait();
+}
+
+struct DaemonGuard {
+  child:  Child,
+  socket: PathBuf,
+}
+
+impl Drop for DaemonGuard {
+  fn drop(&mut self) {
+    let _ = self.child.kill();
+    let _ = self.child.wait();
+    let _ = std::fs::remove_file(&self.socket);
+  }
 }
