@@ -101,7 +101,9 @@ configuration writes those events again without starting Nix or querying the
 warm graph. The snapshot is replaced by a new `eval`, and invalidated by `diff`
 or `watch`. This system is **opt-in**. It does not check whether source files,
 environment variables, or other impure inputs changed, so use ordinary `eval`
-when a fresh result is important to its success. It requires a running daemon
+when a fresh result is important to its success. Replay also skips GC root
+registration, so with `--gc-roots-dir` the replayed derivations stay alive only
+as long as the roots the original `eval` created. It requires a running daemon
 and fails if there is no completed matching session.
 
 [^1]: I can almost hear you asking _"what the hell is incremental-like?"_. Well,
