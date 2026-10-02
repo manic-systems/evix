@@ -4,7 +4,7 @@ use std::{
   sync::{Arc, Mutex},
 };
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use evix::{AutoArg, Config, Input, Remote, Session};
 use serde::Serialize;
 
@@ -17,8 +17,17 @@ pub(crate) struct DaemonState {
 
 #[derive(Clone)]
 struct CachedSession {
-  session:      Arc<Session>,
-  replay_lines: Option<Arc<[String]>>,
+  session: Arc<Session>,
+  replay:  Replay,
+}
+
+/// Newline-delimited [`Response::Event`](evix_protocol::Response::Event)
+/// messages streamed by the session's initial evaluation.
+#[derive(Clone)]
+pub(crate) enum Replay {
+  Recording,
+  Ready(Arc<[u8]>),
+  Invalidated,
 }
 
 impl DaemonState {
@@ -33,8 +42,8 @@ impl DaemonState {
       .lock()
       .expect("daemon session registry poisoned")
       .insert(key, CachedSession {
-        session:      Arc::clone(&session),
-        replay_lines: None,
+        session: Arc::clone(&session),
+        replay:  Replay::Recording,
       });
     Ok(session)
   }
@@ -57,53 +66,42 @@ impl DaemonState {
       })
   }
 
-  pub(crate) async fn replay_lines(
+  pub(crate) fn replay(&self, config: &Config) -> Result<Arc<[u8]>> {
+    let key = session_key(config)?;
+    let mut sessions = self
+      .sessions
+      .lock()
+      .expect("daemon session registry poisoned");
+    let Some(cached) = sessions.get(&key) else {
+      bail!("no replayable session for requested daemon config");
+    };
+    match cached.replay {
+      Replay::Recording => bail!("matching evaluation has not completed"),
+      Replay::Ready(lines) => Ok(lines),
+      Replay::Invalidated => {
+        bail!("session has no replayable completed evaluation")
+      },
+    }
+  }
+
+  /// Leaves a replaced session or an invalidated replay alone, so a `diff`
+  /// that lands before the eval stream finishes still wins.
+  pub(crate) fn settle_replay(
     &self,
     config: &Config,
-  ) -> Result<Arc<[String]>> {
+    session: &Arc<Session>,
+    replay: Replay,
+  ) -> Result<()> {
     let key = session_key(config)?;
-    let session = {
-      let mut sessions = self
-        .sessions
-        .lock()
-        .expect("daemon session registry poisoned");
-      let cached = sessions.get_mut(&key).ok_or_else(|| {
-        anyhow::anyhow!("no replayable session for requested daemon config")
-      })?;
-      if let Some(lines) = &cached.replay_lines {
-        return Ok(Arc::clone(lines));
-      }
-      Arc::clone(&cached.session)
-    };
-
-    let lines: Arc<[String]> = session
-      .replay()
-      .await?
-      .iter()
-      .map(evix::json::event_line)
-      .collect::<Vec<_>>()
-      .into();
     let mut sessions = self
       .sessions
       .lock()
       .expect("daemon session registry poisoned");
     if let Some(cached) = sessions.get_mut(&key)
-      && Arc::ptr_eq(&cached.session, &session)
+      && Arc::ptr_eq(&cached.session, session)
+      && !matches!(cached.replay, Replay::Invalidated)
     {
-      cached.replay_lines = Some(Arc::clone(&lines));
-    }
-    Ok(lines)
-  }
-
-  pub(crate) fn clear_replay(&self, config: &Config) -> Result<()> {
-    let key = session_key(config)?;
-    if let Some(cached) = self
-      .sessions
-      .lock()
-      .expect("daemon session registry poisoned")
-      .get_mut(&key)
-    {
-      cached.replay_lines = None;
+      cached.replay = replay;
     }
     Ok(())
   }

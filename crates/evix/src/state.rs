@@ -8,7 +8,6 @@ pub type EvalGraph = HashMap<Vec<String>, Derivation>;
 pub struct WarmState {
   pub graph:     EvalGraph,
   pub errors:    Vec<EvalError>,
-  pub events:    Vec<Event>,
   pub completed: bool,
   pub error:     Option<String>,
 }
