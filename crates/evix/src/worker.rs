@@ -46,6 +46,10 @@ pub async fn run() -> Result<()> {
   debug!("worker initialized");
 
   let ctx = Arc::new(Context::new().context("Nix context")?);
+  // Nix caches misses for an hour, hiding paths sibling workers just added.
+  ctx
+    .set_setting("narinfo-cache-negative-ttl", "0")
+    .context("disabling the negative path info cache")?;
   let store = Arc::new(Store::open(&ctx, None).context("Nix store")?);
   let eval_options = crate::eval::EvalOptions::from(&config);
   let state = build_eval_state(&ctx, &store)?;
