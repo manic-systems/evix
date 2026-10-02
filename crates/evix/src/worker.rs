@@ -48,7 +48,7 @@ pub async fn run() -> Result<()> {
   let ctx = Arc::new(Context::new().context("Nix context")?);
   let store = Arc::new(Store::open(&ctx, None).context("Nix store")?);
   let eval_options = crate::eval::EvalOptions::from(&config);
-  let state = build_eval_state(&ctx, &store, &config)?;
+  let state = build_eval_state(&ctx, &store)?;
   let auto_args = build_auto_args(&state, &config.auto_args)?;
   let auto_ref = auto_args.as_ref();
 
@@ -97,12 +97,11 @@ pub async fn run() -> Result<()> {
   Ok(())
 }
 
-/// Build a new [`EvalState`] from the given store, attaching flake settings
-/// when the input is a flake.
+/// Build a new [`EvalState`] from the given store with flake settings attached,
+/// so every input kind can call `builtins.getFlake`.
 fn build_eval_state(
   _ctx: &Arc<Context>,
   store: &Arc<Store>,
-  _config: &WorkerConfig,
 ) -> Result<EvalState> {
   let builder = EvalStateBuilder::new(store).context("eval state builder")?;
 
@@ -110,7 +109,7 @@ fn build_eval_state(
   let mut builder = builder;
 
   #[cfg(feature = "flake")]
-  if matches!(_config.input, Input::Flake(_)) {
+  {
     let fs = nix_bindings::flake::FlakeSettings::new(_ctx)
       .context("flake settings")?;
     builder = builder
@@ -276,7 +275,7 @@ pub(crate) fn export_locked_flake(config: &Config) -> Result<Option<String>> {
 
   let ctx = Arc::new(Context::new().context("Nix context")?);
   let store = Arc::new(Store::open(&ctx, None).context("Nix store")?);
-  let state = build_eval_state(&ctx, &store, &WorkerConfig::from(config))?;
+  let state = build_eval_state(&ctx, &store)?;
 
   let flake_settings = flake_settings(&ctx)?;
   let fetchers = nix_bindings::flake::FetchersSettings::new(&ctx)
