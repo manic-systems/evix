@@ -1,7 +1,7 @@
 use std::{
   env,
   fs::{self, OpenOptions},
-  io::{BufRead, BufReader, BufWriter, Write},
+  io::{BufRead, BufReader, Write},
   os::{
     fd::{AsRawFd as _, RawFd},
     unix::{
@@ -29,12 +29,10 @@ mod connection_limit;
 mod session_cache;
 
 use connection_limit::ConnectionLimiter;
-use session_cache::DaemonState;
+use session_cache::{DaemonState, Replay};
 
 const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONNECTIONS: usize = 64;
-// Keep replay responses bounded while avoiding one protocol message per event.
-const REPLAY_LINES_PER_RESPONSE: usize = 128;
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 static SHUTDOWN_SIGNAL_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
@@ -737,14 +735,27 @@ async fn handle_eval(
   stream: &mut UnixStream,
   config: Config,
 ) -> Result<()> {
-  let session = state.replace_session(config).await?;
+  let session = state.replace_session(config.clone()).await?;
   let mut events = session.stream_bounded(evix::DEFAULT_STREAM_BUFFER_CAPACITY);
+  let mut recorded = Some(Vec::new());
   while let Some(event) = events.next().await {
-    match event {
-      Ok(event) => write_response(stream, &Response::event(&event))?,
-      Err(err) => write_response(stream, &Response::error(err.to_string()))?,
+    let response = match event {
+      Ok(event) => Response::event(&event),
+      Err(err) => {
+        recorded = None;
+        Response::error(err.to_string())
+      },
+    };
+    let line = response_line(&response)?;
+    stream.write_all(&line)?;
+    if let Some(recorded) = &mut recorded {
+      recorded.extend_from_slice(&line);
     }
   }
+
+  let replay =
+    recorded.map_or(Replay::Invalidated, |lines| Replay::Ready(lines.into()));
+  state.settle_replay(&config, &session, replay)?;
   write_response(stream, &Response::Done)
 }
 
@@ -753,14 +764,8 @@ async fn handle_replay(
   stream: &mut UnixStream,
   config: Config,
 ) -> Result<()> {
-  let lines = state.replay_lines(&config).await?;
-  let mut writer = BufWriter::new(stream);
-  for lines in lines.chunks(REPLAY_LINES_PER_RESPONSE) {
-    write_response(&mut writer, &Response::Replay {
-      lines: lines.to_vec(),
-    })?;
-  }
-  write_response(&mut writer, &Response::Done)
+  stream.write_all(&state.replay(&config)?)?;
+  write_response(stream, &Response::Done)
 }
 
 async fn handle_watch(
@@ -768,7 +773,8 @@ async fn handle_watch(
   stream: &mut UnixStream,
   config: Config,
 ) -> Result<()> {
-  let session = state.replace_session(config).await?;
+  let session = state.replace_session(config.clone()).await?;
+  state.settle_replay(&config, &session, Replay::Invalidated)?;
   let mut diffs = session.watch_bounded(evix::DEFAULT_STREAM_BUFFER_CAPACITY);
   while let Some(diff) = diffs.next().await {
     match diff {
@@ -801,18 +807,21 @@ async fn handle_diff(
   let session = state.warm_session(&config)?;
   session.require_completed().await?;
   let diff = session.diff_once().await?;
-  state.clear_replay(&config)?;
+  state.settle_replay(&config, &session, Replay::Invalidated)?;
   write_response(stream, &Response::diff(&diff))?;
   write_response(stream, &Response::Done)
 }
 
-fn write_response<W: Write>(stream: &mut W, response: &Response) -> Result<()> {
+fn write_response(stream: &mut UnixStream, response: &Response) -> Result<()> {
+  stream.write_all(&response_line(response)?)?;
+  Ok(())
+}
+
+fn response_line(response: &Response) -> Result<Vec<u8>> {
   // serde_json::to_writer straight onto the socket costs a syscall per token.
   let mut line = serde_json::to_vec(response)?;
   line.push(b'\n');
-  stream.write_all(&line)?;
-  stream.flush()?;
-  Ok(())
+  Ok(line)
 }
 
 #[cfg(test)] mod tests;

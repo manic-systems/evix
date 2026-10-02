@@ -245,13 +245,6 @@ fn run_daemon_request(mut stream: UnixStream, request: &Request) -> Result<()> {
           return Ok(());
         }
       },
-      Response::Replay { lines } => {
-        for line in lines {
-          if write_output_line(&mut stdout, &line)? == OutputWrite::Closed {
-            return Ok(());
-          }
-        }
-      },
       Response::Diff { diff } => {
         if write_output_line(&mut stdout, &evix_json::diff_line(&diff))?
           == OutputWrite::Closed

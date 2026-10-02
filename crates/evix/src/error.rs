@@ -7,8 +7,6 @@ pub enum Error {
   /// `Session::stream` was requested after the single-use stream had already
   /// started or completed.
   SessionStreamConsumed,
-  /// `Session::replay` was requested after the session's result changed.
-  SessionReplayUnavailable,
   /// A warm-graph operation was requested before initial evaluation completed.
   InitialEvaluationIncomplete { operation: &'static str },
   /// A session operation requires completion, but evaluation is still running.
@@ -60,9 +58,6 @@ impl fmt::Display for Error {
     match self {
       Self::SessionStreamConsumed => {
         write!(f, "session stream has already been consumed")
-      },
-      Self::SessionReplayUnavailable => {
-        write!(f, "session has no replayable completed evaluation")
       },
       Self::InitialEvaluationIncomplete { operation } => {
         write!(

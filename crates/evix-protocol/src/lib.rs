@@ -485,20 +485,10 @@ impl std::error::Error for ProtocolVersionError {}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Response {
-  Event {
-    event: Event,
-  },
-  /// Cached newline-delimited event output from a replay request.
-  Replay {
-    lines: Vec<String>,
-  },
-  Diff {
-    diff: Diff,
-  },
+  Event { event: Event },
+  Diff { diff: Diff },
   Done,
-  Error {
-    message: String,
-  },
+  Error { message: String },
 }
 
 impl Response {
