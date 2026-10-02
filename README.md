@@ -94,6 +94,21 @@ If an `evixd` socket is available, `eval` uses it and stores a warm session for
 later `query` or `diff` calls. If the daemon is not running, `eval` falls back
 to local evaluation. Use `--no-daemon` to force local evaluation.
 
+`evix eval --replay` is an experimental, incremental-like [^1] evaluation model
+that serves a snapshot of a completed daemon evaluation. A normal daemon-backed
+`eval` records the NDJSON event stream; a later replay with the same evaluation
+configuration writes those events again without starting Nix or querying the
+warm graph. The snapshot is replaced by a new `eval`, and invalidated by `diff`
+or `watch`. This system is **opt-in**. It does not check whether source files,
+environment variables, or other impure inputs changed, so use ordinary `eval`
+when a fresh result is important to its success. It requires a running daemon
+and fails if there is no completed matching session.
+
+[^1]: I can almost hear you asking _"what the hell is incremental-like?"_. Well,
+    we basically lack _any_ kind of API on Nix's end to make truly incremental
+    evaluation. This is the _closest_ we can get to that while retaining
+    meaningful performance gains.
+
 > [!NOTE]
 > Local/path flakes are checked against their `flake.lock`. Non-local flake refs
 > are still locked virtually inside each worker, so Evix warns for those inputs;
@@ -214,6 +229,7 @@ Like `query`, `diff` requires an existing warm daemon session.
 | `--force-recurse`             | Recurse into all attrsets, ignoring `recurseForDerivations` |
 | `--gc-roots-dir DIR`          | Register GC root symlinks for evaluated derivations         |
 | `--socket PATH`               | Daemon socket path for daemon-backed commands               |
+| `--replay`                    | Replay a completed matching daemon evaluation               |
 | `-v`, `--verbose`             | Increase logging verbosity, repeat for trace logs           |
 | `-q`, `--quiet`               | Decrease logging verbosity, repeat to suppress more logs    |
 
