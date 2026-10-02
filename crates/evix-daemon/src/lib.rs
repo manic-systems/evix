@@ -807,8 +807,10 @@ async fn handle_diff(
 }
 
 fn write_response<W: Write>(stream: &mut W, response: &Response) -> Result<()> {
-  serde_json::to_writer(&mut *stream, response)?;
-  writeln!(stream)?;
+  // serde_json::to_writer straight onto the socket costs a syscall per token.
+  let mut line = serde_json::to_vec(response)?;
+  line.push(b'\n');
+  stream.write_all(&line)?;
   stream.flush()?;
   Ok(())
 }
