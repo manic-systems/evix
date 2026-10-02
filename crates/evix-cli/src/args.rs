@@ -61,6 +61,9 @@ enum Commands {
     socket:                    Option<PathBuf>,
     #[pound(long)]
     no_daemon:                 bool,
+    /// Replay a completed matching daemon evaluation without evaluating Nix.
+    #[pound(long)]
+    replay:                    bool,
   },
 
   #[pound(required_group = "input")]
@@ -268,6 +271,7 @@ pub enum CommandPlan {
     config:     Config,
     socket:     Option<PathBuf>,
     use_daemon: bool,
+    replay:     bool,
   },
   Watch {
     config:     Config,
@@ -346,7 +350,11 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
       gc_roots_dir,
       socket,
       no_daemon,
+      replay,
     } => {
+      if replay && no_daemon {
+        bail!("--replay requires the daemon")
+      }
       Ok(CommandPlan::Eval {
         config: config(EvalInput {
           flake,
@@ -369,6 +377,7 @@ fn command_plan(command: Commands) -> Result<CommandPlan> {
         })?,
         socket,
         use_daemon: !no_daemon,
+        replay,
       })
     },
     Commands::Watch {
@@ -862,6 +871,29 @@ mod tests {
     };
 
     assert_eq!(config.item_timeout_seconds, 7);
+  }
+
+  #[test]
+  fn eval_replay_requires_daemon() {
+    let (_, CommandPlan::Eval { replay, .. }) =
+      parse_plan_from(["eval", "--expr", "{}", "--replay"])
+        .expect("parse replay eval plan")
+    else {
+      panic!("expected eval plan");
+    };
+    assert!(replay);
+
+    let error = match parse_plan_from([
+      "eval",
+      "--expr",
+      "{}",
+      "--replay",
+      "--no-daemon",
+    ]) {
+      Ok(_) => panic!("expected replay without daemon to fail"),
+      Err(error) => error.to_string(),
+    };
+    assert!(error.contains("--replay requires the daemon"));
   }
 
   #[test]

@@ -3,8 +3,6 @@ use std::{
   time::{SystemTime, UNIX_EPOCH},
 };
 
-use evix::Session;
-
 use super::*;
 use crate::session_cache::{SessionRegistry, session_key};
 
@@ -208,13 +206,9 @@ fn warm_session_rejects_daemon_protocol_field_variants() {
   let runtime = Builder::new_current_thread().build().unwrap();
   let state = DaemonState::default();
   let base = Config::expr("{}");
-  let session =
-    Arc::new(runtime.block_on(Session::open(base.clone())).unwrap());
-  state
-    .sessions
-    .lock()
-    .expect("daemon session registry poisoned")
-    .insert(session_key(&base).unwrap(), Arc::clone(&session));
+  runtime
+    .block_on(state.replace_session(base.clone()))
+    .unwrap();
 
   let mut query_config = base.clone();
   query_config.workers = 8;

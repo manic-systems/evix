@@ -12,7 +12,13 @@ const MAX_SESSIONS: usize = 32;
 
 #[derive(Default)]
 pub(crate) struct DaemonState {
-  pub(crate) sessions: Mutex<SessionRegistry<Arc<Session>>>,
+  sessions: Mutex<SessionRegistry<CachedSession>>,
+}
+
+#[derive(Clone)]
+struct CachedSession {
+  session:      Arc<Session>,
+  replay_lines: Option<Arc<[String]>>,
 }
 
 impl DaemonState {
@@ -26,7 +32,10 @@ impl DaemonState {
       .sessions
       .lock()
       .expect("daemon session registry poisoned")
-      .insert(key, Arc::clone(&session));
+      .insert(key, CachedSession {
+        session:      Arc::clone(&session),
+        replay_lines: None,
+      });
     Ok(session)
   }
 
@@ -36,13 +45,67 @@ impl DaemonState {
       .sessions
       .lock()
       .expect("daemon session registry poisoned");
-    sessions.get(&key).ok_or_else(|| {
-      anyhow::anyhow!(
-        "no warm session for requested daemon config; query/diff reuse a \
-         session only when all daemon-protocol config values match a \
-         completed eval or watch"
-      )
-    })
+    sessions
+      .get(&key)
+      .map(|cached| Arc::clone(&cached.session))
+      .ok_or_else(|| {
+        anyhow::anyhow!(
+          "no warm session for requested daemon config; query/diff reuse a \
+           session only when all daemon-protocol config values match a \
+           completed eval or watch"
+        )
+      })
+  }
+
+  pub(crate) async fn replay_lines(
+    &self,
+    config: &Config,
+  ) -> Result<Arc<[String]>> {
+    let key = session_key(config)?;
+    let session = {
+      let mut sessions = self
+        .sessions
+        .lock()
+        .expect("daemon session registry poisoned");
+      let cached = sessions.get_mut(&key).ok_or_else(|| {
+        anyhow::anyhow!("no replayable session for requested daemon config")
+      })?;
+      if let Some(lines) = &cached.replay_lines {
+        return Ok(Arc::clone(lines));
+      }
+      Arc::clone(&cached.session)
+    };
+
+    let lines: Arc<[String]> = session
+      .replay()
+      .await?
+      .iter()
+      .map(evix::json::event_line)
+      .collect::<Vec<_>>()
+      .into();
+    let mut sessions = self
+      .sessions
+      .lock()
+      .expect("daemon session registry poisoned");
+    if let Some(cached) = sessions.get_mut(&key)
+      && Arc::ptr_eq(&cached.session, &session)
+    {
+      cached.replay_lines = Some(Arc::clone(&lines));
+    }
+    Ok(lines)
+  }
+
+  pub(crate) fn clear_replay(&self, config: &Config) -> Result<()> {
+    let key = session_key(config)?;
+    if let Some(cached) = self
+      .sessions
+      .lock()
+      .expect("daemon session registry poisoned")
+      .get_mut(&key)
+    {
+      cached.replay_lines = None;
+    }
+    Ok(())
   }
 }
 
@@ -92,6 +155,17 @@ impl<T: Clone> SessionRegistry<T> {
     self.remove_order_entry(key);
     self.order.push_back(key.to_owned());
     Some(value)
+  }
+}
+
+impl<T> SessionRegistry<T> {
+  fn get_mut(&mut self, key: &str) -> Option<&mut T> {
+    if !self.sessions.contains_key(key) {
+      return None;
+    }
+    self.remove_order_entry(key);
+    self.order.push_back(key.to_owned());
+    self.sessions.get_mut(key)
   }
 }
 
