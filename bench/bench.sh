@@ -2,7 +2,8 @@
 # Wall-clock benchmark of evix evaluation vs nix-eval-jobs on a fixed fixture,
 # using hyperfine. Covers evix local-only evaluation, remote-only distributed
 # evaluation, mixed local+remote distributed evaluation, daemon prewarming,
-# warm daemon graph queries, and nix-eval-jobs as the reference.
+# warm daemon graph queries and event replays, and nix-eval-jobs as the
+# reference.
 #
 # Usage: bench/bench.sh [breadth] [depth]   (defaults: breadth=6 depth=3)
 set -euo pipefail
@@ -44,7 +45,7 @@ for _ in $(seq 1 100); do
 	[ -S "$sock" ] && break
 	sleep 0.05
 done
-"$evix" eval --socket "$sock" --workers 4$args_str >/dev/null
+"$evix" eval --socket "$sock" --workers 4"$args_str" >/dev/null
 
 cmds=(
 	-n "evix local=1" "$evix eval --no-daemon --workers 1$args_str >/dev/null"
@@ -53,8 +54,8 @@ cmds=(
 	-n "evix distributed remote=4" "$evix eval --no-daemon --workers 0 --insecure-tokenless-remote --remote 127.0.0.1:$port $sys 4$args_str >/dev/null"
 	-n "evix distributed local=4 remote=4" "$evix eval --no-daemon --workers 4 --insecure-tokenless-remote --remote 127.0.0.1:$port $sys 4$args_str >/dev/null"
 	-n "evix daemon prewarm local=4" "$evix eval --socket $sock --workers 4$args_str >/dev/null"
+	-n "evix daemon warm replay local=4" "$evix eval --replay --socket $sock --workers 4$args_str >/dev/null"
 	-n "evix daemon warm query full local=4" "$evix query --socket $sock --workers 4$args_str >/dev/null"
-	-n "evix daemon warm query n0 local=4" "$evix query --socket $sock --workers 4 --attr-prefix n0$args_str >/dev/null"
 )
 if command -v nix-eval-jobs >/dev/null; then
 	cmds+=(-n "nix-eval-jobs w=4" "nix-eval-jobs --gc-roots-dir $gc --workers 4 $fixture$fargs_str >/dev/null")
