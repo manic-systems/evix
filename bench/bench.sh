@@ -45,7 +45,7 @@ for _ in $(seq 1 100); do
 	[ -S "$sock" ] && break
 	sleep 0.05
 done
-"$evix" eval --socket "$sock" --workers 4"$args_str" >/dev/null
+"$evix" eval --socket "$sock" --workers 4 "${args[@]}" >/dev/null
 
 cmds=(
 	-n "evix local=1" "$evix eval --no-daemon --workers 1$args_str >/dev/null"
@@ -56,6 +56,7 @@ cmds=(
 	-n "evix daemon prewarm local=4" "$evix eval --socket $sock --workers 4$args_str >/dev/null"
 	-n "evix daemon warm replay local=4" "$evix eval --replay --socket $sock --workers 4$args_str >/dev/null"
 	-n "evix daemon warm query full local=4" "$evix query --socket $sock --workers 4$args_str >/dev/null"
+	-n "evix daemon warm query n0 local=4" "$evix query --socket $sock --workers 4 --attr-prefix n0$args_str >/dev/null"
 )
 if command -v nix-eval-jobs >/dev/null; then
 	cmds+=(-n "nix-eval-jobs w=4" "nix-eval-jobs --gc-roots-dir $gc --workers 4 $fixture$fargs_str >/dev/null")

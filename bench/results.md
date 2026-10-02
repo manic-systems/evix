@@ -1,11 +1,12 @@
 | Command | Mean [ms] | Min [ms] | Max [ms] | Relative |
 |:---|---:|---:|---:|---:|
-| `evix local=1` | 840.0 ± 17.0 | 813.4 | 855.5 | 21.22 ± 0.52 |
-| `evix local=4` | 424.4 ± 17.4 | 397.4 | 439.6 | 10.72 ± 0.46 |
-| `evix local=8` | 437.7 ± 22.9 | 419.9 | 477.5 | 11.06 ± 0.60 |
-| `evix distributed remote=4` | 571.2 ± 23.9 | 543.0 | 599.9 | 14.43 ± 0.64 |
-| `evix distributed local=4 remote=4` | 446.7 ± 24.4 | 418.2 | 483.8 | 11.28 ± 0.64 |
-| `evix daemon prewarm local=4` | 532.2 ± 6.5 | 525.5 | 542.8 | 13.44 ± 0.25 |
-| `evix daemon warm replay local=4` | 39.6 ± 0.6 | 39.0 | 40.5 | 1.00 |
-| `evix daemon warm query full local=4` | 286.3 ± 2.4 | 283.6 | 289.3 | 7.23 ± 0.12 |
-| `nix-eval-jobs w=4` | 438.6 ± 4.3 | 435.3 | 446.0 | 11.08 ± 0.19 |
+| `evix local=1` | 118.8 ± 4.6 | 112.5 | 124.5 | 11.75 ± 0.81 |
+| `evix local=4` | 62.1 ± 2.7 | 60.3 | 66.9 | 6.14 ± 0.44 |
+| `evix local=8` | 58.1 ± 2.9 | 54.4 | 61.6 | 5.75 ± 0.43 |
+| `evix distributed remote=4` | 82.3 ± 5.4 | 76.2 | 91.1 | 8.14 ± 0.71 |
+| `evix distributed local=4 remote=4` | 61.8 ± 2.7 | 59.7 | 66.1 | 6.12 ± 0.44 |
+| `evix daemon prewarm local=4` | 64.2 ± 1.2 | 62.8 | 65.4 | 6.35 ± 0.38 |
+| `evix daemon warm replay local=4` | 12.9 ± 0.7 | 11.9 | 13.6 | 1.28 ± 0.10 |
+| `evix daemon warm query full local=4` | 13.5 ± 0.3 | 13.2 | 14.0 | 1.34 ± 0.08 |
+| `evix daemon warm query n0 local=4` | 10.1 ± 0.6 | 9.5 | 10.7 | 1.00 |
+| `nix-eval-jobs w=4` | 80.5 ± 7.3 | 75.2 | 92.0 | 7.96 ± 0.85 |
