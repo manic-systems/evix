@@ -18,6 +18,7 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
+      exclude: [manic-systems/*]
     groups:
       github-actions:
         patterns:
