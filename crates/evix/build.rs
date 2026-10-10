@@ -7,6 +7,7 @@ const GENERATED_FILE: &str = "worker_capnp.rs";
 fn main() {
   println!("cargo:rerun-if-changed={SCHEMA}");
   println!("cargo:rerun-if-changed={CHECKED_IN_GENERATED}");
+  println!("cargo:rerun-if-env-changed=EVIX_REGENERATE_SCHEMA");
 
   let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
   let generated = out_path.join(GENERATED_FILE);
@@ -24,4 +25,9 @@ fn main() {
     .file(SCHEMA)
     .run()
     .expect("compile worker Cap'n Proto schema");
+
+  if env::var_os("EVIX_REGENERATE_SCHEMA").is_some() {
+    fs::copy(generated, CHECKED_IN_GENERATED)
+      .expect("update checked-in Cap'n Proto schema");
+  }
 }

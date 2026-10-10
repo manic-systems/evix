@@ -92,6 +92,16 @@ mod tests {
   use super::*;
 
   #[test]
+  fn checked_in_schema_matches_generated() {
+    assert!(
+      include_str!(concat!(env!("OUT_DIR"), "/worker_capnp.rs"))
+        == include_str!("generated/worker_capnp.rs"),
+      "src/generated/worker_capnp.rs is stale, regenerate it with \
+       `EVIX_REGENERATE_SCHEMA=1 cargo build -p evix`"
+    );
+  }
+
+  #[test]
   fn config_constructors_set_input_and_defaults() {
     let expr = Config::expr("{}");
     let Input::Expr(value) = expr.input else {
