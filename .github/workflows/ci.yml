@@ -1,24 +1,50 @@
-name: Build and Test with Cargo
+name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
+
 jobs:
   checks:
+    name: Checks (${{ matrix.system }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            system: x86_64-linux
-          - os: ubuntu-24.04-arm
-            system: aarch64-linux
-    uses: manic-systems/workflows/.github/workflows/rust-checks.yml@8e0aa91fd3b74f101424d4e36ac743c8f8403a32
+          - { os: ubuntu-latest, system: x86_64-linux }
+          - { os: ubuntu-26.04-arm, system: aarch64-linux }
+    permissions:
+      actions: write
+      contents: read
+    uses: manic-systems/workflows/.github/workflows/nix-checks.yml@cbe0792d849aef0dbad4d2bde960b110761ed905 # v2.1.1
     with:
       os: ${{ matrix.os }}
-      flake-check-command: nix build .#packages.${{ matrix.system }}.default && nix flake check --no-build
+      flake-check-command: nix flake check --no-build
+      build: true
+      build-command: nix build .#packages.${{ matrix.system }}.default -L --no-link
+      cache: true
+      cache-save: true
+
+  eval-vm:
+    name: Eval VM Test
+    needs: checks
+    uses: manic-systems/workflows/.github/workflows/nix-checks.yml@cbe0792d849aef0dbad4d2bde960b110761ed905 # v2.1.1
+    with:
+      flake-check: false
+      build: true
+      build-command: nix build .#checks.x86_64-linux.eval -L --no-link
+      cache: true
+
+  actions:
+    name: Actions Lint
+    uses: manic-systems/workflows/.github/workflows/actions-lint.yml@cbe0792d849aef0dbad4d2bde960b110761ed905 # v2.1.1
