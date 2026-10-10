@@ -25,7 +25,7 @@ futures-channel = { version = "0.3.34", features = [ "sink" ] }
 futures-core = "0.3.34"
 futures-util = { version = "0.3.34", features = [ "sink" ] }
 libc = "0.2.189"
-misstep = { version = "0.2.0", features = [ "color", "pretty" ] }
+misstep = { version = "0.3.0", features = [ "color", "pretty" ] }
 nix-bindings = { version = "0.2352.0", features = [ "full" ] }
 notify = "8.2.0"
 pound = "0.1.8"
