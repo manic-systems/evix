@@ -24,12 +24,4 @@ fn main() {
     .file(SCHEMA)
     .run()
     .expect("compile worker Cap'n Proto schema");
-
-  let generated_bytes =
-    fs::read(generated).expect("read generated Cap'n Proto schema");
-  let checked_in_bytes = fs::read(CHECKED_IN_GENERATED).ok();
-  if checked_in_bytes.as_deref() != Some(generated_bytes.as_slice()) {
-    fs::write(CHECKED_IN_GENERATED, generated_bytes)
-      .expect("update checked-in Cap'n Proto schema");
-  }
 }
