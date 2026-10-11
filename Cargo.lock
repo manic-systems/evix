@@ -486,18 +486,27 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "pound"
-version = "0.1.8"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c86a0567fb5ffd1e933983f6baef4e557d0cc2bf3541b26c169bbb8099889487"
+checksum = "e0aa0607db6c54a5bdd9eee943bf2c3a7709845074b7f166adb9828249c184e5"
 dependencies = [
  "pound-derive",
 ]
 
 [[package]]
 name = "pound-derive"
-version = "0.1.8"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1ea8a0689abf825dc184168cda08d14ff35a451cea2650464400932589cf4cf"
+checksum = "d214e82f3f3e5c7e299c9f4bd32e1fd6d02c6356099db08fc8a8c36c232c28a7"
+dependencies = [
+ "pound-derive-impl",
+]
+
+[[package]]
+name = "pound-derive-impl"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3275fba5172ba0ccad344c8ae8027a6c1bc54488ed341a5640255e162ce918c4"
 dependencies = [
  "proc-macro2",
  "quote",
