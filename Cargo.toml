@@ -28,7 +28,7 @@ libc = "0.2.189"
 misstep = { version = "0.3.0", features = [ "color", "pretty" ] }
 nix-bindings = { version = "0.2352.0", features = [ "full" ] }
 notify = "8.2.0"
-pound = "0.1.8"
+pound = "0.3.0"
 serde = { version = "1.0.229", features = [ "derive" ] }
 serde_json = "1.0.151"
 tokio = { version = "1.53.1", features = [
