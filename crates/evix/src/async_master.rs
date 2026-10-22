@@ -433,7 +433,11 @@ async fn worker_task(
     let attr = item.path.join(".");
     trace!(worker = %spec.label, attr = %attr, "sending work to worker");
 
-    let event = work_with_timeout(&mut worker, &item, &config, &spec).await;
+    let (event, status) =
+      match work_with_timeout(&mut worker, &item, &config, &spec).await {
+        Ok((event, status)) => (Ok(event), status),
+        Err(err) => (Err(err), WorkerStatus::Ready),
+      };
     let failed = event.is_err();
     if result_tx
       .send(WorkerResult {
@@ -454,6 +458,9 @@ async fn worker_task(
         "worker failed while evaluating attribute; reconnecting"
       );
       worker.reconnect(&config, &spec).await?;
+    } else if status == WorkerStatus::Restart {
+      info!(worker = %spec.label, "restarting worker due to memory limit");
+      worker.restart(&config, &spec).await?;
     }
   }
 
@@ -467,9 +474,9 @@ async fn work_with_timeout(
   item: &WorkItem,
   config: &WorkerConfig,
   spec: &WorkerSpec,
-) -> Result<Event> {
+) -> Result<(Event, WorkerStatus)> {
   let timeout = Duration::from_secs(config.item_timeout_seconds);
-  match time::timeout(timeout, worker.work(&item.path, config, spec)).await {
+  match time::timeout(timeout, worker.work(&item.path)).await {
     Ok(result) => result,
     Err(_) => {
       worker.abort().await;
@@ -588,29 +595,34 @@ impl WorkerClient {
     }
   }
 
-  async fn work(
-    &mut self,
-    path: &[String],
-    config: &WorkerConfig,
-    spec: &WorkerSpec,
-  ) -> Result<Event> {
+  /// Evaluate one attribute path.
+  ///
+  /// A local worker that reports [`WorkerStatus::Restart`] has exited after
+  /// answering; the caller hands the event to the scheduler first and then
+  /// calls [`restart`](Self::restart). Remote workers restart their own
+  /// evaluator and always report [`WorkerStatus::Ready`].
+  async fn work(&mut self, path: &[String]) -> Result<(Event, WorkerStatus)> {
     match self {
       Self::Local(worker) => {
         let WorkResponse { event, status } = worker.work(path).await?;
-        if status == WorkerStatus::Restart {
-          info!(worker = %spec.label, "restarting worker due to memory limit");
-          worker.wait_for_restart().await;
-          let worker_exe = match &spec.kind {
-            WorkerKind::Local { worker_exe } => worker_exe.as_deref(),
-            WorkerKind::Remote(_) => None,
-          };
-          **worker =
-            WorkerProcess::spawn_local(config, &spec.label, worker_exe).await?;
-        }
-        Ok(event)
+        Ok((event, status))
       },
-      Self::Remote(worker) => worker.work(path).await,
+      Self::Remote(worker) => {
+        Ok((worker.work(path).await?, WorkerStatus::Ready))
+      },
     }
+  }
+
+  async fn restart(
+    &mut self,
+    config: &WorkerConfig,
+    spec: &WorkerSpec,
+  ) -> Result<()> {
+    if let Self::Local(worker) = self {
+      worker.wait_for_restart().await;
+      *self = Self::connect(config, spec).await?;
+    }
+    Ok(())
   }
 
   async fn stop(&mut self) {
