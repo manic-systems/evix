@@ -239,11 +239,10 @@ fn remote_worker_abort_drops_connection_without_shutdown() {
           .await
           .unwrap();
       let mut client = WorkerClient::Remote(remote);
-      let spec = remote_worker(0, &[]);
 
       {
         let path = vec!["slow".to_owned()];
-        let work = client.work(&path, &config, &spec).fuse();
+        let work = client.work(&path).fuse();
         futures_util::pin_mut!(work);
         futures_util::select! {
           result = work => panic!("remote work returned before abort: {result:?}"),

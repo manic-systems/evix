@@ -18,12 +18,42 @@ const NIX_GCROOTS_DIR: &str = "/nix/var/nix/gcroots";
 /// Attribute-path length at which traversal stops descending.
 const MAX_ATTR_DEPTH: usize = 64;
 
+/// Maps a derivation to `{ <output> = <store path>; }`.
+///
+/// Discarding the string context lets the paths be read without realising
+/// them, so outputs come from the evaluated value instead of reading the `.drv`
+/// back from the store.
+const OUTPUT_PATHS_EXPR: &str = r#"
+  drv: builtins.listToAttrs (map (name: {
+    inherit name;
+    value = builtins.unsafeDiscardStringContext drv.${name}.outPath;
+  }) (drv.outputs or [ "out" ]))
+"#;
+
 #[derive(Debug, Clone)]
 pub(crate) struct EvalOptions {
   pub(crate) force_recurse:   bool,
   pub(crate) gc_roots_dir:    Option<PathBuf>,
   pub(crate) meta:            bool,
   pub(crate) show_input_drvs: bool,
+}
+
+/// Per-worker state reused across [`process_attr`] calls.
+pub(crate) struct EvalHelpers<'s> {
+  output_paths: Value<'s>,
+  store_dir:    String,
+}
+
+impl<'s> EvalHelpers<'s> {
+  pub(crate) fn new(state: &'s EvalState, store: &Store) -> Result<Self> {
+    let output_paths = state
+      .eval_from_string(OUTPUT_PATHS_EXPR, "<evix>")
+      .context("evaluating output path helper")?;
+    Ok(Self {
+      output_paths,
+      store_dir: store_dir(store),
+    })
+  }
 }
 
 /// Evaluate a single attribute path against the Nix expression root.
@@ -41,6 +71,7 @@ pub fn process_attr<'s>(
   path: &[String],
   auto_args: Option<&Value<'s>>,
   options: &EvalOptions,
+  helpers: &EvalHelpers<'s>,
 ) -> Event {
   let attr = path.join(".");
 
@@ -66,7 +97,7 @@ pub fn process_attr<'s>(
 
   match state.get_derivation(&value) {
     Ok(Some(drv_path)) => {
-      match make_job(store, &value, path, drv_path, options) {
+      match make_job(store, &value, path, drv_path, options, helpers) {
         Ok(ev) => ev,
         Err(e) => {
           Event::Error(EvalError {
@@ -162,6 +193,7 @@ fn make_job(
   path: &[String],
   drv_path: nix_bindings::StorePath,
   options: &EvalOptions,
+  helpers: &EvalHelpers<'_>,
 ) -> Result<Event> {
   let attr = path.join(".");
   let drv_path_str =
@@ -175,7 +207,13 @@ fn make_job(
     .get_attr("system")
     .and_then(|v| v.as_string())
     .unwrap_or_default();
-  let outputs = output_paths(store, &drv_path);
+  let outputs = match value_output_paths(value, helpers) {
+    Ok(outputs) => outputs,
+    Err(e) => {
+      debug!(error = %e, "falling back to reading outputs from the .drv");
+      output_paths(store, &drv_path)
+    },
+  };
 
   let meta = if options.meta { read_meta(value) } else { None };
   let constituents = read_constituents(value);
@@ -376,6 +414,27 @@ fn read_input_drvs(
 fn input_drv_outputs(value: &serde_json::Value) -> Option<Vec<String>> {
   let outputs = value.get("outputs").unwrap_or(value);
   serde_json::from_value(outputs.clone()).ok()
+}
+
+/// Read each output's store path from the evaluated derivation value.
+///
+/// # Returns
+///
+/// A map from output name to store path, [`None`] for a floating
+/// content-addressed output, whose `outPath` is a placeholder outside the
+/// store until it is built.
+fn value_output_paths(
+  value: &Value<'_>,
+  helpers: &EvalHelpers<'_>,
+) -> Result<BTreeMap<String, Option<String>>> {
+  let paths = helpers.output_paths.call(value)?;
+  let prefix = format!("{}/", helpers.store_dir);
+  let mut map = BTreeMap::new();
+  for name in paths.attr_keys()? {
+    let path = paths.get_attr(&name)?.as_string()?;
+    map.insert(name, path.starts_with(&prefix).then_some(path));
+  }
+  Ok(map)
 }
 
 /// Read each output's store path from the derivation's `.drv`.
