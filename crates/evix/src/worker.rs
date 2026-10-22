@@ -57,6 +57,7 @@ pub async fn run() -> Result<()> {
   let auto_ref = auto_args.as_ref();
 
   let root = eval_root(&ctx, &state, &store, &config, auto_ref)?;
+  let helpers = crate::eval::EvalHelpers::new(&state, &store)?;
 
   write_server(&mut writer, &ServerMessage::Ready).await?;
 
@@ -79,6 +80,7 @@ pub async fn run() -> Result<()> {
       &path,
       auto_ref,
       &eval_options,
+      &helpers,
     );
     write_server(&mut writer, &ServerMessage::Event(Box::new(response)))
       .await?;
