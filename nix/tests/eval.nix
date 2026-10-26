@@ -102,7 +102,10 @@ in
   pkgs.testers.runNixOSTest {
     name = "evix-eval";
 
-    nodes = {
+    # Give each container its own writable store under /var/lib/nix-chroot.
+    defaults.nix.settings.store = "local?root=/var/lib/nix-chroot";
+
+    containers = {
       host = {pkgs, ...}: {
         virtualisation.vlans = [1];
         environment.systemPackages = [
@@ -245,7 +248,7 @@ in
       def stop_worker():
           worker.succeed("test ! -e /tmp/evix-worker.pid || kill $(cat /tmp/evix-worker.pid) 2>/dev/null || true")
 
-      with subtest("boot VMs and start remote worker"):
+      with subtest("boot containers and start remote worker"):
           host.start()
           worker.start()
           host.wait_for_unit("multi-user.target")

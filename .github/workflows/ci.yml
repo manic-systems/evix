@@ -35,11 +35,15 @@ jobs:
       cache: true
       cache-save: true
 
-  eval-vm:
-    name: Eval VM Test
+  eval:
+    name: Eval Container Test
     needs: checks
     uses: manic-systems/workflows/.github/workflows/nix-checks.yml@ec457510b197b2eeb8b2ea2d182f31e3ed7157bd # v2.3.3
     with:
+      extra-nix-config: |
+        auto-allocate-uids          = true
+        extra-experimental-features = auto-allocate-uids cgroups
+        extra-system-features       = uid-range
       flake-check: false
       build: true
       build-command: nix build .#checks.x86_64-linux.eval -L --no-link
@@ -64,7 +68,7 @@ jobs:
     if: always()
     needs:
       - checks
-      - eval-vm
+      - eval
       - schema
       - actions
     runs-on: ubuntu-latest
