@@ -480,11 +480,19 @@ fn output_paths(
   };
 
   let store_dir = store_dir(store);
+  let prefix = format!("{store_dir}/");
+  let env = parsed.get("env");
   for (name, output) in outputs {
-    let path = output
-      .get("path")
-      .and_then(serde_json::Value::as_str)
-      .map(|path| absolute_store_path(&store_dir, path));
+    let path = match output.get("path").and_then(serde_json::Value::as_str) {
+      Some(path) => Some(absolute_store_path(&store_dir, path)),
+      None => {
+        env
+          .and_then(|env| env.get(name))
+          .and_then(serde_json::Value::as_str)
+          .filter(|path| path.starts_with(&prefix))
+          .map(str::to_owned)
+      },
+    };
     map.insert(name.clone(), path);
   }
   map
