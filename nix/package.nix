@@ -4,7 +4,6 @@
   glibc,
   nixVersions,
   nixForBindings ? nixVersions.nix_2_34,
-  capnproto,
   pkg-config,
   rustc,
 }: let
@@ -37,7 +36,6 @@ in
     enableParallelBuilding = true;
     strictDeps = true;
     nativeBuildInputs = [
-      capnproto
       pkg-config
     ];
 

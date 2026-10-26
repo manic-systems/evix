@@ -41,6 +41,19 @@
       eval = pkgs.callPackage ./nix/tests/eval.nix {
         evix = self.packages.${system}.evix;
       };
+
+      schema = self.packages.${system}.evix.overrideAttrs (old: {
+        pname = "evix-schema";
+        nativeBuildInputs = old.nativeBuildInputs ++ [pkgs.capnproto];
+        env = old.env // {EVIX_REGENERATE_SCHEMA = "1";};
+        cargoBuildFlags = ["-p" "evix"];
+        doCheck = false;
+        installPhase = /* sh */ ''
+          diff -u ${old.src}/crates/evix/src/generated/worker_capnp.rs \
+            crates/evix/src/generated/worker_capnp.rs
+          touch $out
+        '';
+      });
     });
 
     hydraJobs = self.packages;

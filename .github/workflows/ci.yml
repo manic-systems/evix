@@ -45,6 +45,16 @@ jobs:
       build-command: nix build .#checks.x86_64-linux.eval -L --no-link
       cache: true
 
+  schema:
+    name: Worker Schema
+    needs: checks
+    uses: manic-systems/workflows/.github/workflows/nix-checks.yml@ec457510b197b2eeb8b2ea2d182f31e3ed7157bd # v2.3.3
+    with:
+      flake-check: false
+      build: true
+      build-command: nix build .#checks.x86_64-linux.schema -L --no-link
+      cache: true
+
   actions:
     name: Actions Lint
     uses: manic-systems/workflows/.github/workflows/actions-lint.yml@ec457510b197b2eeb8b2ea2d182f31e3ed7157bd # v2.3.3
@@ -55,6 +65,7 @@ jobs:
     needs:
       - checks
       - eval-vm
+      - schema
       - actions
     runs-on: ubuntu-latest
     steps:
