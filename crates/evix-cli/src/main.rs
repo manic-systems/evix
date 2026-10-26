@@ -16,7 +16,7 @@ use evix_daemon as daemon;
 use evix_protocol::{Config as WireConfig, Request, Response};
 use futures_util::StreamExt as _;
 use mimalloc_ng::{MiMalloc, option::Number};
-use misstep::{Result, ResultExt as _, bail};
+use misstep::{Result, ResultExt as _, bail, report};
 use tokio::runtime::Builder;
 use tracing::{info, warn};
 
@@ -187,10 +187,12 @@ fn is_relative_flake_path(path: &str) -> bool {
 
 fn canonical_flake_path(path: &str) -> Result<String> {
   let path = if path.is_empty() { "." } else { path };
-  fs::canonicalize(path)
-    .with_context(|| format!("canonicalizing flake path {path:?}"))
-    .map(|path| path.to_string_lossy().into_owned())
-    .erase()
+  let canonical = fs::canonicalize(path)
+    .with_context(|| format!("canonicalizing flake path {path:?}"))?;
+  canonical
+    .into_os_string()
+    .into_string()
+    .map_err(|path| report!("flake path {path:?} is not valid UTF-8"))
 }
 
 fn run_client_or_local(
@@ -597,22 +599,22 @@ mod tests {
       panic!("expected flake input");
     };
 
-    let cwd = fs::canonicalize(".")
-      .unwrap()
-      .to_string_lossy()
-      .into_owned();
-    assert_eq!(reference, format!("path:{cwd}#hydraJobs"));
+    let cwd = fs::canonicalize(".").unwrap();
+    assert_eq!(
+      reference,
+      format!("path:{}#hydraJobs", cwd.to_str().unwrap())
+    );
   }
 
   #[test]
   fn daemon_request_rewrites_path_flake_ref() {
     let reference = daemon_flake_ref("path:.#packages").unwrap();
-    let cwd = fs::canonicalize(".")
-      .unwrap()
-      .to_string_lossy()
-      .into_owned();
+    let cwd = fs::canonicalize(".").unwrap();
 
-    assert_eq!(reference, format!("path:{cwd}#packages"));
+    assert_eq!(
+      reference,
+      format!("path:{}#packages", cwd.to_str().unwrap())
+    );
   }
 
   #[test]
@@ -623,7 +625,7 @@ mod tests {
       reference,
       format!(
         "path:{}",
-        fs::canonicalize("Cargo.toml").unwrap().to_string_lossy()
+        fs::canonicalize("Cargo.toml").unwrap().to_str().unwrap()
       )
     );
   }
@@ -636,7 +638,7 @@ mod tests {
       reference,
       format!(
         "path:{}#packages",
-        fs::canonicalize("src/main.rs").unwrap().to_string_lossy()
+        fs::canonicalize("src/main.rs").unwrap().to_str().unwrap()
       )
     );
   }

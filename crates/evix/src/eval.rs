@@ -7,7 +7,7 @@ use std::{
   path::{Component, Path, PathBuf},
 };
 
-use misstep::{OptionExt as _, Result, ResultExt as _, bail};
+use misstep::{OptionExt as _, Result, ResultExt as _, bail, report};
 use nix_bindings::{EvalState, Store, StorePath, Value, ValueType};
 use tracing::{debug, warn};
 
@@ -215,7 +215,11 @@ fn make_job(
     },
   };
 
-  let meta = if options.meta { read_meta(value) } else { None };
+  let meta = if options.meta {
+    read_meta(value)?
+  } else {
+    None
+  };
   let constituents = read_constituents(value);
   let input_drvs = if options.show_input_drvs {
     read_input_drvs(store, &drv_path)
@@ -256,11 +260,13 @@ fn make_job(
 ///
 /// The `meta` attrset as a JSON object, or `None` if the derivation declares no
 /// `meta` attribute.
-fn read_meta(value: &Value<'_>) -> Option<serde_json::Value> {
+fn read_meta(value: &Value<'_>) -> Result<Option<serde_json::Value>> {
   if !value.has_attr("meta").unwrap_or(false) {
-    return None;
+    return Ok(None);
   }
-  let meta = value.get_attr("meta").ok()?;
+  let Ok(meta) = value.get_attr("meta") else {
+    return Ok(None);
+  };
   value_to_json(meta, 64)
 }
 
@@ -273,15 +279,14 @@ fn read_meta(value: &Value<'_>) -> Option<serde_json::Value> {
 fn value_to_json(
   mut value: Value<'_>,
   depth_remaining: u32,
-) -> Option<serde_json::Value> {
+) -> Result<Option<serde_json::Value>> {
   use serde_json::Value as J;
 
-  if depth_remaining == 0 {
-    return None;
+  if depth_remaining == 0 || value.force().is_err() {
+    return Ok(None);
   }
 
-  value.force().ok()?;
-  match value.value_type() {
+  let json = match value.value_type() {
     ValueType::Null => Some(J::Null),
     ValueType::Bool => value.as_bool().ok().map(J::Bool),
     ValueType::Int => value.as_int().ok().map(|i| J::Number(i.into())),
@@ -294,26 +299,36 @@ fn value_to_json(
     },
     ValueType::String => value.as_string().ok().map(J::String),
     ValueType::Path => {
-      value
-        .as_path()
-        .ok()
-        .map(|p| J::String(p.to_string_lossy().into_owned()))
+      let Ok(path) = value.as_path() else {
+        return Ok(None);
+      };
+      let path = path
+        .into_os_string()
+        .into_string()
+        .map_err(|path| report!("meta path {path:?} is not valid UTF-8"))?;
+      Some(J::String(path))
     },
     ValueType::List => {
-      let len = value.list_len().ok()?;
+      let Ok(len) = value.list_len() else {
+        return Ok(None);
+      };
       let mut arr = Vec::with_capacity(len);
       for i in 0..len {
-        let item = value.list_get(i).ok()?;
-        arr.push(value_to_json(item, depth_remaining - 1).unwrap_or(J::Null));
+        let Ok(item) = value.list_get(i) else {
+          return Ok(None);
+        };
+        arr.push(value_to_json(item, depth_remaining - 1)?.unwrap_or(J::Null));
       }
       Some(J::Array(arr))
     },
     ValueType::Attrs => {
-      let keys = value.attr_keys().ok()?;
+      let Ok(keys) = value.attr_keys() else {
+        return Ok(None);
+      };
       let mut map = serde_json::Map::new();
       for key in keys {
         if let Ok(child) = value.get_attr(&key)
-          && let Some(child_json) = value_to_json(child, depth_remaining - 1)
+          && let Some(child_json) = value_to_json(child, depth_remaining - 1)?
         {
           map.insert(key, child_json);
         }
@@ -321,7 +336,8 @@ fn value_to_json(
       Some(J::Object(map))
     },
     ValueType::Thunk | ValueType::Function | ValueType::External => None,
-  }
+  };
+  Ok(json)
 }
 
 /// Read the `constituents` attribute of an aggregate (Hydra) job.

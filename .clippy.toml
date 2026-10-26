@@ -1,0 +1,4 @@
+disallowed-methods = [
+  { path = "std::ffi::OsStr::to_string_lossy", reason = "convert with `to_str` and handle the error" },
+  { path = "std::path::Path::to_string_lossy", reason = "convert with `to_str` and handle the error" },
+]

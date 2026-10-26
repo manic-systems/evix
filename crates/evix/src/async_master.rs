@@ -189,6 +189,16 @@ fn validate_config(config: &Config) -> Result<()> {
   if config.item_timeout_seconds == 0 {
     bail!("item timeout must be greater than zero");
   }
+  if let Input::File(path) = &config.input
+    && path.to_str().is_none()
+  {
+    bail!("input file {path:?} is not valid UTF-8");
+  }
+  if let Some(dir) = &config.gc_roots_dir
+    && dir.to_str().is_none()
+  {
+    bail!("gc roots directory {dir:?} is not valid UTF-8");
+  }
   for remote in &config.remotes {
     if remote.workers == 0 {
       bail!(
