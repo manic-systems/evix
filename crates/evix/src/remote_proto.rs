@@ -88,15 +88,6 @@ where
   read_client_with_options(reader, remote_reader_options()).await
 }
 
-pub(crate) async fn read_local_client<R>(
-  reader: &mut R,
-) -> Result<ClientMessage>
-where
-  R: AsyncRead + Unpin,
-{
-  read_client_with_options(reader, local_reader_options()).await
-}
-
 async fn read_client_with_options<R>(
   reader: &mut R,
   options: ReaderOptions,
@@ -105,6 +96,20 @@ where
   R: AsyncRead + Unpin,
 {
   let message = capnp_futures::serialize::read_message(reader, options).await?;
+  decode_client(&message)
+}
+
+pub(crate) fn read_local_client_blocking<R>(reader: R) -> Result<ClientMessage>
+where
+  R: std::io::BufRead,
+{
+  let message = capnp::serialize::read_message(reader, local_reader_options())?;
+  decode_client(&message)
+}
+
+fn decode_client(
+  message: &capnp::message::Reader<capnp::serialize::OwnedSegments>,
+) -> Result<ClientMessage> {
   let root = message.get_root::<worker_capnp::client_message::Reader>()?;
   match root.which()? {
     worker_capnp::client_message::Which::Setup(setup) => {
@@ -144,6 +149,26 @@ pub(crate) async fn write_server<W>(
 where
   W: AsyncWrite + Unpin,
 {
+  let builder = encode_server(message)?;
+  capnp_futures::serialize::write_message(&mut *writer, &builder).await?;
+  writer.flush().await?;
+  Ok(())
+}
+
+pub(crate) fn write_server_blocking<W>(
+  writer: &mut W,
+  message: &ServerMessage,
+) -> Result<()>
+where
+  W: std::io::Write,
+{
+  let builder = encode_server(message)?;
+  capnp::serialize::write_message(&mut *writer, &builder)?;
+  writer.flush()?;
+  Ok(())
+}
+
+fn encode_server(message: &ServerMessage) -> Result<Builder<HeapAllocator>> {
   let mut builder = Builder::new(HeapAllocator::new());
   {
     let mut root = builder.init_root::<worker_capnp::server_message::Builder>();
@@ -161,9 +186,7 @@ where
       ServerMessage::Error(error) => root.set_error(error),
     }
   }
-  capnp_futures::serialize::write_message(&mut *writer, &builder).await?;
-  writer.flush().await?;
-  Ok(())
+  Ok(builder)
 }
 
 pub(crate) async fn read_server<R>(reader: &mut R) -> Result<ServerMessage>

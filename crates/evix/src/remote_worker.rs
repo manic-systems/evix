@@ -261,7 +261,8 @@ async fn serve_connection(
       },
     };
 
-  let mut worker = WorkerProcess::spawn_local(&config, "remote", None).await?;
+  let mut worker =
+    WorkerProcess::spawn_local(&config, "remote", None, Vec::new()).await?;
   remote_proto::write_server(&mut stream, &ServerMessage::Ready).await?;
 
   loop {
@@ -305,7 +306,9 @@ async fn serve_connection(
           .await?;
         if restart {
           worker.wait_for_restart().await;
-          worker = WorkerProcess::spawn_local(&config, "remote", None).await?;
+          worker =
+            WorkerProcess::spawn_local(&config, "remote", None, Vec::new())
+              .await?;
         }
       },
       Ok(ClientMessage::Shutdown) => {
