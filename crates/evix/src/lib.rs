@@ -20,7 +20,12 @@ mod worker_capnp {
   include!(concat!(env!("OUT_DIR"), "/worker_capnp.rs"));
 }
 
-pub use config::{Config, ConfigBuilder};
+pub use config::{
+  Config,
+  ConfigBuilder,
+  DEFAULT_MAX_MEMORY_MB,
+  DEFAULT_WORKERS,
+};
 pub use error::{Error, Result};
 pub use evix_protocol::{
   AutoArg,

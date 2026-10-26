@@ -1,7 +1,16 @@
 use std::{env, path::PathBuf};
 
 use anyhow::{Result, bail};
-use evix::{AutoArg, Config, Filter, Input, Remote};
+use evix::{
+  AutoArg,
+  Config,
+  DEFAULT_MAX_MEMORY_MB,
+  DEFAULT_WORKERS,
+  Filter,
+  Input,
+  Remote,
+};
+use evix_protocol::DEFAULT_ITEM_TIMEOUT_SECONDS;
 use pound::{FromArg, Parse, ValueError};
 
 const PACK_SEP: char = '\x1f';
@@ -47,11 +56,11 @@ enum Commands {
     meta:                      bool,
     #[pound(long)]
     show_input_drvs:           bool,
-    #[pound(long, default = "1")]
+    #[pound(long, default = { DEFAULT_WORKERS })]
     workers:                   usize,
-    #[pound(long, alias = "max-memory-size", default = "4096")]
+    #[pound(long, alias = "max-memory-size", default = { DEFAULT_MAX_MEMORY_MB })]
     max_memory:                usize,
-    #[pound(long, default = "1800")]
+    #[pound(long, default = { DEFAULT_ITEM_TIMEOUT_SECONDS })]
     item_timeout_seconds:      u64,
     #[pound(long)]
     force_recurse:             bool,
@@ -92,11 +101,11 @@ enum Commands {
     meta:                      bool,
     #[pound(long)]
     show_input_drvs:           bool,
-    #[pound(long, default = "1")]
+    #[pound(long, default = { DEFAULT_WORKERS })]
     workers:                   usize,
-    #[pound(long, alias = "max-memory-size", default = "4096")]
+    #[pound(long, alias = "max-memory-size", default = { DEFAULT_MAX_MEMORY_MB })]
     max_memory:                usize,
-    #[pound(long, default = "1800")]
+    #[pound(long, default = { DEFAULT_ITEM_TIMEOUT_SECONDS })]
     item_timeout_seconds:      u64,
     #[pound(long)]
     force_recurse:             bool,
@@ -134,11 +143,11 @@ enum Commands {
     meta:                      bool,
     #[pound(long)]
     show_input_drvs:           bool,
-    #[pound(long, default = "1")]
+    #[pound(long, default = { DEFAULT_WORKERS })]
     workers:                   usize,
-    #[pound(long, alias = "max-memory-size", default = "4096")]
+    #[pound(long, alias = "max-memory-size", default = { DEFAULT_MAX_MEMORY_MB })]
     max_memory:                usize,
-    #[pound(long, default = "1800")]
+    #[pound(long, default = { DEFAULT_ITEM_TIMEOUT_SECONDS })]
     item_timeout_seconds:      u64,
     #[pound(long)]
     force_recurse:             bool,
@@ -150,7 +159,7 @@ enum Commands {
     system:                    Vec<String>,
     #[pound(long)]
     attr_prefix:               Vec<String>,
-    #[pound(long, hidden)]
+    #[pound(long, deprecated = "query always runs through the daemon")]
     no_daemon:                 bool,
   },
 
@@ -180,11 +189,11 @@ enum Commands {
     meta:                      bool,
     #[pound(long)]
     show_input_drvs:           bool,
-    #[pound(long, default = "1")]
+    #[pound(long, default = { DEFAULT_WORKERS })]
     workers:                   usize,
-    #[pound(long, alias = "max-memory-size", default = "4096")]
+    #[pound(long, alias = "max-memory-size", default = { DEFAULT_MAX_MEMORY_MB })]
     max_memory:                usize,
-    #[pound(long, default = "1800")]
+    #[pound(long, default = { DEFAULT_ITEM_TIMEOUT_SECONDS })]
     item_timeout_seconds:      u64,
     #[pound(long)]
     force_recurse:             bool,

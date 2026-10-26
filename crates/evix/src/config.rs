@@ -41,6 +41,9 @@ pub struct Config {
   pub worker_exe:           Option<PathBuf>,
 }
 
+pub const DEFAULT_WORKERS: usize = 1;
+pub const DEFAULT_MAX_MEMORY_MB: usize = 4096;
+
 impl Default for Config {
   fn default() -> Self {
     Self {
@@ -48,8 +51,8 @@ impl Default for Config {
       auto_args:            Vec::new(),
       force_recurse:        false,
       gc_roots_dir:         None,
-      workers:              1,
-      max_memory_size:      4096,
+      workers:              DEFAULT_WORKERS,
+      max_memory_size:      DEFAULT_MAX_MEMORY_MB,
       item_timeout_seconds: default_item_timeout_seconds(),
       meta:                 false,
       show_input_drvs:      false,
