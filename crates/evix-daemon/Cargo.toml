@@ -12,6 +12,7 @@ evix-protocol.workspace      = true
 evix.workspace               = true
 futures-util.workspace       = true
 libc.workspace               = true
+mimalloc-ng.workspace        = true
 misstep.workspace            = true
 pound.workspace              = true
 serde.workspace              = true

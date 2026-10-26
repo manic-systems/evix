@@ -1,7 +1,11 @@
 use std::{env, io, path::PathBuf};
 
+use mimalloc_ng::{MiMalloc, option::Number};
 use misstep::Result;
 use pound::Parse;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 #[derive(Parse)]
 #[pound(name = "evixd")]
@@ -24,6 +28,8 @@ struct Args {
 }
 
 fn main() -> Result<()> {
+  // SAFETY: no other thread exists yet to run mimalloc code concurrently.
+  unsafe { Number::PurgeDelay.set(0) };
   // Local workers re-exec the current binary with EVIX_WORKER set. Enter the
   // worker protocol before doing anything daemon-shaped, otherwise every
   // evaluation spawns another daemon instead of a worker.

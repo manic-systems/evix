@@ -161,6 +161,7 @@ dependencies = [
  "evix-daemon",
  "evix-protocol",
  "futures-util",
+ "mimalloc-ng",
  "misstep",
  "pound",
  "serde_json",
@@ -177,6 +178,7 @@ dependencies = [
  "evix-protocol",
  "futures-util",
  "libc",
+ "mimalloc-ng",
  "misstep",
  "pound",
  "serde",
@@ -364,6 +366,24 @@ name = "memchr"
 version = "2.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
+
+[[package]]
+name = "mimalloc-ng"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2a251d0dea6ba6dea627981f138014ed76b614fe08da4729a3b5f94ee6189bb"
+dependencies = [
+ "mimalloc-ng-sys",
+]
+
+[[package]]
+name = "mimalloc-ng-sys"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f773914732ab550b5e414bb4339dce9d50db4000fe2c2b00453354806aa5b48"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "minimal-lexical"

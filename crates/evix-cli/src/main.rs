@@ -15,9 +15,13 @@ use evix::{Config, Event, Input, Session, json as evix_json};
 use evix_daemon as daemon;
 use evix_protocol::{Config as WireConfig, Request, Response};
 use futures_util::StreamExt as _;
+use mimalloc_ng::{MiMalloc, option::Number};
 use misstep::{Result, ResultExt as _, bail};
 use tokio::runtime::Builder;
 use tracing::{info, warn};
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum OutputWrite {
@@ -26,6 +30,8 @@ enum OutputWrite {
 }
 
 fn main() {
+  // SAFETY: no other thread exists yet to run mimalloc code concurrently.
+  unsafe { Number::PurgeDelay.set(0) };
   if std::env::var_os(evix::WORKER_ENV).is_some() {
     init_tracing_subscriber(Verbosity::default());
   }
