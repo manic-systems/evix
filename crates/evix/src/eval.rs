@@ -27,7 +27,7 @@ const OUTPUT_PATHS_EXPR: &str = r#"
   drv: builtins.listToAttrs (map (name: {
     inherit name;
     value = builtins.unsafeDiscardStringContext drv.${name}.outPath;
-  }) (drv.outputs or [ "out" ]))
+  }) (drv.drvAttrs.outputs or drv.outputs or [ "out" ]))
 "#;
 
 #[derive(Debug, Clone)]
