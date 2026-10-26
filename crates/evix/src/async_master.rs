@@ -1,16 +1,25 @@
 use std::{
   collections::VecDeque,
   future::Future,
+  io,
+  mem,
+  os::{fd::OwnedFd, unix::net::UnixStream},
   panic::AssertUnwindSafe,
   path::PathBuf,
+  pin::pin,
   sync::{
     Arc,
+    Mutex,
+    PoisonError,
     atomic::{AtomicBool, Ordering},
   },
   time::Duration,
 };
 
-use futures_util::FutureExt as _;
+use futures_util::{
+  FutureExt as _,
+  future::{self, Either},
+};
 use misstep::{OptionExt as _, Result, ResultExt as _, bail, report};
 use tokio::{sync::mpsc, task::JoinHandle, time};
 use tracing::{debug, error, info, trace, warn};
@@ -21,6 +30,7 @@ use crate::{
   Event,
   Input,
   Remote,
+  fork::ForkSlot,
   remote_worker::RemoteWorker,
   worker_config::WorkerConfig,
   worker_process::{WorkResponse, WorkerProcess, WorkerStatus},
@@ -46,8 +56,19 @@ struct WorkerSpec {
 
 #[derive(Clone)]
 enum WorkerKind {
-  Local { worker_exe: Option<PathBuf> },
+  Local {
+    worker_exe: Option<PathBuf>,
+    fork:       LocalFork,
+  },
   Remote(Remote),
+}
+
+#[derive(Clone, Default)]
+enum LocalFork {
+  #[default]
+  None,
+  Parent(Arc<Mutex<Vec<ForkSlot>>>),
+  Child(Arc<Mutex<Option<(UnixStream, OwnedFd)>>>),
 }
 
 enum WorkerClient {
@@ -73,6 +94,7 @@ struct WorkerResult {
 }
 
 enum WorkerMessage {
+  Ready { worker_id: usize },
   Result(Box<WorkerResult>),
   Cancelled,
   Exited { error: String },
@@ -114,7 +136,7 @@ where
 {
   validate_config(&config)?;
   let worker_config = worker_config(&config).await?;
-  let specs = worker_specs(&config);
+  let specs = worker_specs(&config)?;
   if specs.is_empty() {
     bail!("evaluation requires at least one local or remote worker");
   }
@@ -210,7 +232,7 @@ fn validate_config(config: &Config) -> Result<()> {
   Ok(())
 }
 
-fn worker_specs(config: &Config) -> Vec<WorkerSpec> {
+fn worker_specs(config: &Config) -> Result<Vec<WorkerSpec>> {
   let remote_workers: usize = config.remotes.iter().map(|r| r.workers).sum();
   let local_workers = if config.workers == 0 && remote_workers > 0 {
     0
@@ -218,13 +240,34 @@ fn worker_specs(config: &Config) -> Vec<WorkerSpec> {
     config.workers.max(1)
   };
 
+  let mut forks = Vec::new();
+  let mut slots = Vec::new();
+  for _ in 1..local_workers {
+    let (master, worker) =
+      UnixStream::pair().context("creating a forked worker socket")?;
+    let (stderr_read, stderr_write) =
+      io::pipe().context("creating a forked worker stderr pipe")?;
+    forks.push(LocalFork::Child(Arc::new(Mutex::new(Some((
+      master,
+      OwnedFd::from(stderr_read),
+    ))))));
+    slots.push(ForkSlot {
+      socket: OwnedFd::from(worker),
+      stderr: OwnedFd::from(stderr_write),
+    });
+  }
+  if !slots.is_empty() {
+    forks.insert(0, LocalFork::Parent(Arc::new(Mutex::new(slots))));
+  }
+
   let mut specs = Vec::with_capacity(local_workers + remote_workers);
-  for _ in 0..local_workers {
+  for index in 0..local_workers {
     specs.push(WorkerSpec {
       id:    specs.len(),
       label: "local".into(),
       kind:  WorkerKind::Local {
         worker_exe: config.worker_exe.clone(),
+        fork:       forks.get(index).cloned().unwrap_or_default(),
       },
     });
   }
@@ -237,7 +280,16 @@ fn worker_specs(config: &Config) -> Vec<WorkerSpec> {
       });
     }
   }
-  specs
+  Ok(specs)
+}
+
+impl WorkerSpec {
+  fn is_forked(&self) -> bool {
+    matches!(self.kind, WorkerKind::Local {
+      fork: LocalFork::Child(_),
+      ..
+    })
+  }
 }
 
 impl Scheduler {
@@ -342,7 +394,9 @@ where
   F: FnMut(Event) -> Fut,
   Fut: Future<Output = Result<()>>,
 {
-  let mut idle = (0..workers.len()).collect::<VecDeque<_>>();
+  let mut idle = (0..workers.len())
+    .filter(|&id| !workers[id].spec.is_forked())
+    .collect::<VecDeque<_>>();
 
   loop {
     if cancel.load(Ordering::Relaxed) {
@@ -367,6 +421,10 @@ where
       .await
       .context("all worker tasks exited before evaluation completed")?;
     let result = match message {
+      WorkerMessage::Ready { worker_id } => {
+        idle.push_back(worker_id);
+        continue;
+      },
       WorkerMessage::Result(result) => *result,
       WorkerMessage::Cancelled => return Ok(RunOutcome::Cancelled),
       WorkerMessage::Exited { error } => bail!("{error}"),
@@ -466,7 +524,25 @@ async fn serve_worker(
   mut work_rx: mpsc::Receiver<WorkerCommand>,
   result_tx: &mpsc::Sender<WorkerMessage>,
 ) -> Result<()> {
-  let mut worker = WorkerClient::connect(&config, &spec).await?;
+  let mut worker = if spec.is_forked() {
+    let connect = pin!(WorkerClient::connect(&config, &spec));
+    match future::select(pin!(work_rx.recv()), connect).await {
+      Either::Left((Some(WorkerCommand::Work(_)), _)) => {
+        bail!("work sent to {} before it started", spec.label)
+      },
+      Either::Left((Some(WorkerCommand::Stop) | None, _)) => return Ok(()),
+      Either::Right((worker, _)) => {
+        let worker = worker?;
+        let ready = WorkerMessage::Ready { worker_id: spec.id };
+        if result_tx.send(ready).await.is_err() {
+          return Ok(());
+        }
+        worker
+      },
+    }
+  } else {
+    WorkerClient::connect(&config, &spec).await?
+  };
 
   while let Some(command) = work_rx.recv().await {
     if cancel.load(Ordering::Relaxed) {
@@ -619,12 +695,37 @@ fn worker_failure_event(
 impl WorkerClient {
   async fn connect(config: &WorkerConfig, spec: &WorkerSpec) -> Result<Self> {
     match &spec.kind {
-      WorkerKind::Local { worker_exe } => {
+      WorkerKind::Local { worker_exe, fork } => {
+        let slots = match fork {
+          LocalFork::None => Vec::new(),
+          LocalFork::Parent(slots) => {
+            mem::take(
+              &mut *slots.lock().unwrap_or_else(PoisonError::into_inner),
+            )
+          },
+          LocalFork::Child(socket) => {
+            let socket =
+              socket.lock().unwrap_or_else(PoisonError::into_inner).take();
+            if let Some((socket, stderr)) = socket
+              && let Some(worker) = WorkerProcess::attach_forked(
+                config,
+                &spec.label,
+                socket,
+                stderr,
+              )
+              .await?
+            {
+              return Ok(Self::Local(Box::new(worker)));
+            }
+            Vec::new()
+          },
+        };
         Ok(Self::Local(Box::new(
           WorkerProcess::spawn_local(
             config,
             &spec.label,
             worker_exe.as_deref(),
+            slots,
           )
           .await?,
         )))

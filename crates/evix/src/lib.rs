@@ -4,6 +4,7 @@ mod async_master;
 mod config;
 mod error;
 mod eval;
+mod fork;
 pub mod json;
 mod remote_proto;
 mod remote_worker;
@@ -55,11 +56,7 @@ pub const DEFAULT_STREAM_BUFFER_CAPACITY: usize = 1024;
 /// Reads a typed setup message from stdin, then processes attribute paths
 /// requested by the master process.
 pub fn run_worker() -> Result<()> {
-  let runtime = tokio::runtime::Builder::new_current_thread()
-    .enable_io()
-    .build()
-    .map_err(|err| Error::internal(err.into()))?;
-  runtime.block_on(worker::run()).map_err(Error::from)
+  worker::run().map_err(Error::from)
 }
 
 /// Run the worker protocol when this process was spawned as an Evix worker.

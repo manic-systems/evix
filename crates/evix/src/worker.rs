@@ -1,22 +1,27 @@
 #[cfg(feature = "flake")]
 use std::{collections::BTreeSet, env, path::Path};
-use std::{mem::MaybeUninit, sync::Arc};
+use std::{
+  fs::File,
+  io::{self, BufReader, BufWriter, Write as _},
+  mem::MaybeUninit,
+  os::fd::{AsFd as _, OwnedFd},
+  sync::Arc,
+};
 
 use misstep::{OptionExt as _, Result, ResultExt as _, bail};
 use nix_bindings::{Context, EvalState, EvalStateBuilder, Store, Value};
-use tokio::io::{BufReader, BufWriter};
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tracing::{debug, trace, warn};
 
 #[cfg(feature = "flake")] use crate::Config;
 use crate::{
   AutoArg,
   Input,
+  fork::{self, ForkSlot, Forker},
   remote_proto::{
     ClientMessage,
     ServerMessage,
-    read_local_client,
-    write_server,
+    read_local_client_blocking,
+    write_server_blocking,
   },
   worker_config::WorkerConfig,
   worker_process::WorkerStatus,
@@ -33,13 +38,13 @@ use crate::{
   reason = "nix-bindings evaluation APIs require Arc-backed handles; worker \
             state stays inside one worker subprocess task"
 )]
-pub async fn run() -> Result<()> {
-  let stdin = tokio::io::stdin();
-  let stdout = tokio::io::stdout();
-  let mut reader = BufReader::new(stdin).compat();
-  let mut writer = BufWriter::new(stdout).compat_write();
+pub fn run() -> Result<()> {
+  let (mut reader, mut writer) = channel(
+    io::stdin().as_fd().try_clone_to_owned()?,
+    io::stdout().as_fd().try_clone_to_owned()?,
+  );
 
-  let config = match read_local_client(&mut reader).await? {
+  let config = match read_local_client_blocking(&mut reader)? {
     ClientMessage::Setup { config, .. } => config,
     other => bail!("worker expected setup message, got {other:?}"),
   };
@@ -51,6 +56,7 @@ pub async fn run() -> Result<()> {
     .set_setting("narinfo-cache-negative-ttl", "0")
     .context("disabling the negative path info cache")?;
   let store = Arc::new(Store::open(&ctx, None).context("Nix store")?);
+  let mut forker = Forker::from_env(&store, config.max_memory_size)?;
   let eval_options = crate::eval::EvalOptions::from(&config);
   let state = build_eval_state(&ctx, &store)?;
   let auto_args = build_auto_args(&state, &config.auto_args)?;
@@ -59,10 +65,12 @@ pub async fn run() -> Result<()> {
   let root = eval_root(&ctx, &state, &store, &config, auto_ref)?;
   let helpers = crate::eval::EvalHelpers::new(&state, &store)?;
 
-  write_server(&mut writer, &ServerMessage::Ready).await?;
+  forker.start_clock();
+  write_server_blocking(&mut writer, &ServerMessage::Ready)?;
 
+  let mut completed = 0;
   loop {
-    let path = match read_local_client(&mut reader).await? {
+    let path = match read_local_client_blocking(&mut reader)? {
       ClientMessage::Work(path) => path,
       ClientMessage::Shutdown => {
         debug!("received shutdown command, worker exiting");
@@ -82,8 +90,10 @@ pub async fn run() -> Result<()> {
       &eval_options,
       &helpers,
     );
-    write_server(&mut writer, &ServerMessage::Event(Box::new(response)))
-      .await?;
+    write_server_blocking(
+      &mut writer,
+      &ServerMessage::Event(Box::new(response)),
+    )?;
 
     let max_rss_kb = get_maxrss_kb().context("checking worker memory usage")?;
     if should_restart(max_rss_kb, config.max_memory_size) {
@@ -91,16 +101,41 @@ pub async fn run() -> Result<()> {
         max_rss_kb = max_rss_kb,
         "memory limit exceeded, worker restarting"
       );
-      write_server(&mut writer, &ServerMessage::Status(WorkerStatus::Restart))
-        .await?;
+      write_server_blocking(
+        &mut writer,
+        &ServerMessage::Status(WorkerStatus::Restart),
+      )?;
       return Ok(());
     }
 
-    write_server(&mut writer, &ServerMessage::Status(WorkerStatus::Ready))
-      .await?;
+    write_server_blocking(
+      &mut writer,
+      &ServerMessage::Status(WorkerStatus::Ready),
+    )?;
+
+    completed += 1;
+    forker.reap();
+    if let Some(ForkSlot { socket, stderr }) =
+      forker.fork_due(&ctx, completed, max_rss_kb)?
+    {
+      (reader, writer) = channel(socket.try_clone()?, socket);
+      fork::detach_stdio(stderr)?;
+      writer.write_all(&std::process::id().to_le_bytes())?;
+      write_server_blocking(&mut writer, &ServerMessage::Ready)?;
+    }
   }
 
   Ok(())
+}
+
+fn channel(
+  read: OwnedFd,
+  write: OwnedFd,
+) -> (BufReader<File>, BufWriter<File>) {
+  (
+    BufReader::new(File::from(read)),
+    BufWriter::new(File::from(write)),
+  )
 }
 
 /// Build a new [`EvalState`] from the given store with flake settings attached,

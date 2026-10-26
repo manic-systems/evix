@@ -3,28 +3,31 @@ use std::{
   env,
   ffi::{OsStr, OsString},
   fs,
+  os::{
+    fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd},
+    unix::net::UnixStream as StdUnixStream,
+  },
   path::{Path, PathBuf},
   process::{self, Stdio},
   time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use futures_util::AsyncReadExt as _;
 use misstep::{OptionExt as _, Report, Result, ResultExt as _, bail, report};
 use tokio::{
   io::{AsyncRead, AsyncReadExt as _, BufReader},
-  process::{Child, ChildStdin, ChildStdout, Command},
+  net::{UnixStream, unix::pipe},
+  process::{Child, Command},
   task::JoinHandle,
   time,
 };
-use tokio_util::compat::{
-  Compat,
-  TokioAsyncReadCompatExt,
-  TokioAsyncWriteCompatExt,
-};
+use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tracing::{debug, info};
 
 use crate::{
   Event,
   WORKER_ENV,
+  fork::{FORK_FDS_ENV, ForkSlot},
   remote_proto::{
     ClientMessage,
     ServerMessage,
@@ -40,11 +43,16 @@ const STDERR_LINE_LIMIT: usize = 16 * 1024;
 
 pub(crate) struct WorkerProcess {
   pub(crate) label:  String,
-  proc:              Child,
-  stdin:             Compat<ChildStdin>,
-  stdout:            Compat<BufReader<ChildStdout>>,
+  proc:              Process,
+  stdin:             Box<dyn futures_util::AsyncWrite + Send + Unpin>,
+  stdout:            Box<dyn futures_util::AsyncRead + Send + Unpin>,
   stderr_task:       Option<JoinHandle<Result<String>>>,
   _nix_options_file: Option<NixOptionsFile>,
+}
+
+enum Process {
+  Spawned(Child),
+  Forked(OwnedFd),
 }
 
 pub(crate) struct WorkResponse {
@@ -63,6 +71,7 @@ impl WorkerProcess {
     config: &WorkerConfig,
     label: impl Into<String>,
     worker_exe: Option<&Path>,
+    fork_slots: Vec<ForkSlot>,
   ) -> Result<Self> {
     let label = label.into();
     let exe = match worker_exe {
@@ -81,10 +90,30 @@ impl WorkerProcess {
     if let Some(file) = &nix_options_file {
       command.env("NIX_USER_CONF_FILES", file.conf_files());
     }
+    if !fork_slots.is_empty() {
+      command.env(FORK_FDS_ENV, ForkSlot::env_value(&fork_slots));
+      let fds: Vec<_> = fork_slots
+        .iter()
+        .flat_map(|slot| [slot.socket.as_raw_fd(), slot.stderr.as_raw_fd()])
+        .collect();
+      // SAFETY: `fcntl` is async-signal-safe, and only clears close-on-exec
+      // on descriptors this process owns.
+      unsafe {
+        command.pre_exec(move || {
+          for &fd in &fds {
+            if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+              return Err(std::io::Error::last_os_error());
+            }
+          }
+          Ok(())
+        });
+      }
+    }
 
     let mut child = command
       .spawn()
       .with_context(|| format!("spawning worker process for {label}"))?;
+    drop(fork_slots);
 
     let stdin = child.stdin.take().context("worker stdin")?.compat_write();
     let stdout =
@@ -96,9 +125,9 @@ impl WorkerProcess {
 
     let mut worker = Self {
       label,
-      proc: child,
-      stdin,
-      stdout,
+      proc: Process::Spawned(child),
+      stdin: Box::new(stdin),
+      stdout: Box::new(stdout),
       stderr_task: Some(stderr_task),
       _nix_options_file: nix_options_file,
     };
@@ -117,7 +146,9 @@ impl WorkerProcess {
     match time::timeout(startup, handshake).await {
       Ok(result) => result?,
       Err(_) => {
-        let _ = worker.proc.start_kill();
+        if let Process::Spawned(child) = &mut worker.proc {
+          let _ = child.start_kill();
+        }
         let source = report!(
           "worker did not start within {}s",
           config.item_timeout_seconds
@@ -128,6 +159,64 @@ impl WorkerProcess {
     info!(worker = %worker.label, "worker ready");
 
     Ok(worker)
+  }
+
+  pub(crate) async fn attach_forked(
+    config: &WorkerConfig,
+    label: impl Into<String>,
+    socket: StdUnixStream,
+    stderr: OwnedFd,
+  ) -> Result<Option<Self>> {
+    let label = label.into();
+    let startup = Duration::from_secs(config.item_timeout_seconds);
+    time::timeout(startup, Self::attach(label.clone(), socket, stderr))
+      .await
+      .with_context(|| {
+        format!(
+          "forked worker {label} did not start within {}s",
+          config.item_timeout_seconds
+        )
+      })?
+  }
+
+  async fn attach(
+    label: String,
+    socket: StdUnixStream,
+    stderr: OwnedFd,
+  ) -> Result<Option<Self>> {
+    socket.set_nonblocking(true)?;
+    let (read, write) = UnixStream::from_std(socket)?.into_split();
+    let mut stdout = BufReader::new(read).compat();
+    let mut pid = [0; 4];
+    match stdout.read_exact(&mut pid).await {
+      Ok(()) => {},
+      Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+        return Ok(None);
+      },
+      Err(err) => return Err(err).context("reading forked worker pid").erase(),
+    }
+    let pid = libc::pid_t::try_from(u32::from_le_bytes(pid))
+      .ok()
+      .filter(|&pid| pid > 0)
+      .context("forked worker sent an invalid pid")?;
+
+    let stderr = pipe::Receiver::from_owned_fd(stderr)
+      .context("reading forked worker stderr")?;
+    let stderr_label = label.clone();
+    let stderr_task =
+      tokio::spawn(async move { capture_stderr(stderr_label, stderr).await });
+
+    let mut worker = Self {
+      label,
+      proc: Process::Forked(pidfd_open(pid)?),
+      stdin: Box::new(write.compat_write()),
+      stdout: Box::new(stdout),
+      stderr_task: Some(stderr_task),
+      _nix_options_file: None,
+    };
+    worker.read_ready().await?;
+    debug!(worker = %worker.label, "forked worker ready");
+    Ok(Some(worker))
   }
 
   pub(crate) async fn work(&mut self, path: &[String]) -> Result<WorkResponse> {
@@ -145,19 +234,33 @@ impl WorkerProcess {
 
   pub(crate) async fn stop(&mut self) {
     let _ = write_client(&mut self.stdin, &ClientMessage::Shutdown).await;
-    let _ = self.proc.wait().await;
-    self.take_stderr().await;
+    self.wait().await;
   }
 
   pub(crate) async fn abort(&mut self) {
-    let _ = self.proc.start_kill();
-    let _ = self.proc.wait().await;
-    self.take_stderr().await;
+    match &mut self.proc {
+      Process::Spawned(child) => {
+        let _ = child.start_kill();
+      },
+      Process::Forked(pidfd) => kill_pidfd(pidfd),
+    }
+    self.wait().await;
   }
 
   pub(crate) async fn wait_for_restart(&mut self) {
-    let _ = self.proc.wait().await;
+    self.wait().await;
+  }
+
+  async fn wait(&mut self) -> Option<std::process::ExitStatus> {
+    let status = match &mut self.proc {
+      Process::Spawned(child) => child.wait().await.ok(),
+      Process::Forked(_) => {
+        let _ = self.stdout.read_to_end(&mut Vec::new()).await;
+        None
+      },
+    };
     self.take_stderr().await;
+    status
   }
 
   /// Await the stderr capture task and return its bounded tail.
@@ -220,7 +323,10 @@ impl WorkerProcess {
     attr: &str,
     source: misstep::Report,
   ) -> misstep::Report {
-    let status = self.proc.wait().await.ok();
+    let status = match &mut self.proc {
+      Process::Spawned(child) => child.wait().await.ok(),
+      Process::Forked(_) => None,
+    };
     let stderr = self.take_stderr().await;
     let stderr = stderr.trim();
     let mut message = format!(
@@ -235,6 +341,40 @@ impl WorkerProcess {
       message.push_str(stderr);
     }
     Report::msg(message)
+  }
+}
+
+impl Drop for WorkerProcess {
+  fn drop(&mut self) {
+    if let Process::Forked(pidfd) = &self.proc {
+      kill_pidfd(pidfd);
+    }
+  }
+}
+
+fn pidfd_open(pid: libc::pid_t) -> Result<OwnedFd> {
+  // SAFETY: `pidfd_open` takes no pointers.
+  let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+  if fd < 0 {
+    return Err(std::io::Error::last_os_error())
+      .with_context(|| format!("opening a pidfd for forked worker {pid}"))
+      .erase();
+  }
+  let fd = RawFd::try_from(fd).context("pidfd out of range")?;
+  // SAFETY: a successful `pidfd_open` returns a descriptor this process owns.
+  Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+fn kill_pidfd(pidfd: &OwnedFd) {
+  // SAFETY: `pidfd` is open, and a null `siginfo` is allowed.
+  unsafe {
+    libc::syscall(
+      libc::SYS_pidfd_send_signal,
+      pidfd.as_raw_fd(),
+      libc::SIGKILL,
+      std::ptr::null::<libc::siginfo_t>(),
+      0,
+    );
   }
 }
 
@@ -454,11 +594,11 @@ mod tests {
       tokio::spawn(async move { capture_stderr(stderr_label, stderr).await });
 
     WorkerProcess {
-      label: label.to_owned(),
-      proc: child,
-      stdin,
-      stdout,
-      stderr_task: Some(stderr_task),
+      label:             label.to_owned(),
+      proc:              Process::Spawned(child),
+      stdin:             Box::new(stdin),
+      stdout:            Box::new(stdout),
+      stderr_task:       Some(stderr_task),
       _nix_options_file: None,
     }
   }

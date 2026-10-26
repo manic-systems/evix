@@ -414,7 +414,10 @@ fn local_worker(id: usize) -> WorkerSpec {
   WorkerSpec {
     id,
     label: format!("local#{id}"),
-    kind: WorkerKind::Local { worker_exe: None },
+    kind: WorkerKind::Local {
+      worker_exe: None,
+      fork:       LocalFork::None,
+    },
   }
 }
 
