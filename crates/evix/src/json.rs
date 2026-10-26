@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use anyhow::{Context as _, Result, anyhow};
+use misstep::{Result, ResultExt as _, report};
 use serde_json::{Map, Value as Json, json};
 
 use crate::{Derivation, Diff, EvalError, Event};
@@ -168,7 +168,7 @@ fn string_field(value: &Json, name: &str) -> Result<String> {
     .get(name)
     .and_then(Json::as_str)
     .map(str::to_owned)
-    .ok_or_else(|| anyhow!("missing string field {name:?}"))
+    .ok_or_else(|| report!("missing string field {name:?}"))
 }
 
 fn string_vec_field(value: &Json, name: &str) -> Result<Vec<String>> {
@@ -178,7 +178,7 @@ fn string_vec_field(value: &Json, name: &str) -> Result<Vec<String>> {
     .map(serde_json::from_value)
     .transpose()
     .with_context(|| format!("parsing field {name:?}"))?
-    .ok_or_else(|| anyhow!("missing string list field {name:?}"))
+    .ok_or_else(|| report!("missing string list field {name:?}"))
 }
 
 #[cfg(test)]

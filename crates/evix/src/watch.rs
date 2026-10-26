@@ -8,9 +8,9 @@ use std::{
   time::Duration,
 };
 
-use anyhow::{Context as _, Result as AnyhowResult, anyhow, bail};
 use futures_channel::mpsc as futures_mpsc;
 use futures_util::SinkExt as _;
+use misstep::{Result as ReportResult, ResultExt as _, bail, report};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::{
   sync::{Notify, RwLock, mpsc as tokio_mpsc},
@@ -33,7 +33,7 @@ pub async fn watch_loop(
   state: Arc<RwLock<WarmState>>,
   completed: Arc<Notify>,
   tx: futures_mpsc::UnboundedSender<crate::Result<Diff>>,
-) -> AnyhowResult<()> {
+) -> ReportResult<()> {
   watch_loop_with_sender(
     config,
     cancel,
@@ -50,7 +50,7 @@ pub async fn watch_loop_bounded(
   state: Arc<RwLock<WarmState>>,
   completed: Arc<Notify>,
   tx: futures_mpsc::Sender<crate::Result<Diff>>,
-) -> AnyhowResult<()> {
+) -> ReportResult<()> {
   watch_loop_with_sender(
     config,
     cancel,
@@ -67,7 +67,7 @@ async fn watch_loop_with_sender(
   state: Arc<RwLock<WarmState>>,
   completed: Arc<Notify>,
   mut tx: WatchSender,
-) -> AnyhowResult<()> {
+) -> ReportResult<()> {
   wait_for_initial_evaluation(&cancel, &state, &completed).await?;
 
   let paths = watched_paths(&config)?;
@@ -104,8 +104,8 @@ async fn watch_loop_with_sender(
         }
       },
       Ok(Some(Err(err))) => {
-        tx.send(Err(Error::from(anyhow!("filesystem watch error: {err}"))))
-          .await?;
+        let err = Error::from(report!("filesystem watch error: {err}"));
+        tx.send(Err(err)).await?;
       },
       Ok(None) => bail!("filesystem watcher disconnected"),
       Err(_) => {},
@@ -122,11 +122,11 @@ enum WatchAction {
 }
 
 async fn apply_watch_evaluation_result(
-  result: AnyhowResult<(EvalGraph, Vec<EvalError>, run::RunOutcome)>,
+  result: ReportResult<(EvalGraph, Vec<EvalError>, run::RunOutcome)>,
   previous: EvalGraph,
   state: &RwLock<WarmState>,
   tx: &mut WatchSender,
-) -> AnyhowResult<WatchAction> {
+) -> ReportResult<WatchAction> {
   let (graph, errors, outcome) = match result {
     Ok(result) => result,
     Err(err) => {
@@ -157,16 +157,16 @@ enum WatchSender {
 }
 
 impl WatchSender {
-  async fn send(&mut self, item: crate::Result<Diff>) -> AnyhowResult<()> {
+  async fn send(&mut self, item: crate::Result<Diff>) -> ReportResult<()> {
     match self {
       Self::Unbounded(tx) => {
         tx.unbounded_send(item)
-          .map_err(|_| anyhow!("watch stream receiver was dropped"))
+          .map_err(|_| report!("watch stream receiver was dropped"))
       },
       Self::Bounded(tx) => {
         tx.send(item)
           .await
-          .map_err(|_| anyhow!("watch stream receiver was dropped"))
+          .map_err(|_| report!("watch stream receiver was dropped"))
       },
     }
   }
@@ -176,7 +176,7 @@ async fn wait_for_initial_evaluation(
   cancel: &AtomicBool,
   state: &RwLock<WarmState>,
   completed: &Notify,
-) -> AnyhowResult<()> {
+) -> ReportResult<()> {
   while !cancel.load(Ordering::Relaxed) {
     let notified = completed.notified();
     {
@@ -200,7 +200,7 @@ async fn debounce_watch_events(
   while watch_rx.try_recv().is_ok() {}
 }
 
-fn watched_paths(config: &Config) -> AnyhowResult<Vec<PathBuf>> {
+fn watched_paths(config: &Config) -> ReportResult<Vec<PathBuf>> {
   match &config.input {
     Input::File(path) => Ok(vec![path.clone()]),
     Input::Expr(_) => bail!("watch requires a file or local flake input"),
@@ -208,9 +208,9 @@ fn watched_paths(config: &Config) -> AnyhowResult<Vec<PathBuf>> {
   }
 }
 
-fn watched_flake_paths(reference: &str) -> AnyhowResult<Vec<PathBuf>> {
+fn watched_flake_paths(reference: &str) -> ReportResult<Vec<PathBuf>> {
   let root = local_flake_root(reference).ok_or_else(|| {
-    anyhow!("flake reference is not a local path: {reference}")
+    report!("flake reference is not a local path: {reference}")
   })?;
   let mut paths = vec![root.clone()];
   paths.extend(local_path_inputs(&root)?);
@@ -239,7 +239,7 @@ fn local_flake_root(reference: &str) -> Option<PathBuf> {
   None
 }
 
-fn local_path_inputs(root: &Path) -> AnyhowResult<Vec<PathBuf>> {
+fn local_path_inputs(root: &Path) -> ReportResult<Vec<PathBuf>> {
   let lock_path = root.join("flake.lock");
   let Ok(contents) = fs::read_to_string(&lock_path) else {
     return Ok(Vec::new());
@@ -337,7 +337,7 @@ mod tests {
         let mut tx = WatchSender::Unbounded(tx);
 
         let action = apply_watch_evaluation_result(
-          Err(anyhow::anyhow!("broken eval")),
+          Err(misstep::report!("broken eval")),
           graph.clone(),
           &state,
           &mut tx,
@@ -374,7 +374,7 @@ mod tests {
         let mut tx = WatchSender::Bounded(tx);
 
         let action = apply_watch_evaluation_result(
-          Err(anyhow::anyhow!("broken eval")),
+          Err(misstep::report!("broken eval")),
           graph.clone(),
           &state,
           &mut tx,

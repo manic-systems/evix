@@ -412,7 +412,7 @@ impl StartupReporter for RecordingStartupReporter {
     Ok(())
   }
 
-  fn error(&mut self, err: &anyhow::Error) -> Result<()> {
+  fn error(&mut self, err: &misstep::Report) -> Result<()> {
     self.error = Some(err.to_string());
     Ok(())
   }
@@ -422,10 +422,10 @@ struct FailingReadyReporter;
 
 impl StartupReporter for FailingReadyReporter {
   fn ready(&mut self, _socket: &Path) -> Result<()> {
-    Err(anyhow!("ready failed"))
+    Err(report!("ready failed"))
   }
 
-  fn error(&mut self, _err: &anyhow::Error) -> Result<()> {
+  fn error(&mut self, _err: &misstep::Report) -> Result<()> {
     Ok(())
   }
 }

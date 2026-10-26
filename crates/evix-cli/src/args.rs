@@ -1,6 +1,5 @@
 use std::{env, path::PathBuf};
 
-use anyhow::{Result, bail};
 use evix::{
   AutoArg,
   Config,
@@ -11,6 +10,7 @@ use evix::{
   Remote,
 };
 use evix_protocol::DEFAULT_ITEM_TIMEOUT_SECONDS;
+use misstep::{Result, bail};
 use pound::{FromArg, Parse, ValueError};
 
 const PACK_SEP: char = '\x1f';

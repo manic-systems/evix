@@ -4,8 +4,8 @@ use std::{
   time::Duration,
 };
 
-use anyhow::anyhow;
 use futures_util::FutureExt as _;
+use misstep::report;
 use tokio_util::compat::TokioAsyncReadCompatExt as _;
 
 use super::*;
@@ -168,7 +168,7 @@ fn worker_failure_becomes_non_fatal_attribute_error() {
     path: vec!["jobs".into(), "bad".into()],
   };
 
-  let event = worker_failure_event(&worker, &item, anyhow!("process died"));
+  let event = worker_failure_event(&worker, &item, report!("process died"));
 
   let Event::Error(error) = event else {
     panic!("expected worker failure to become an evaluation error");
@@ -189,7 +189,7 @@ fn abort_workers_cancels_in_flight_worker_tasks() {
     .block_on(async {
       let (work_tx, _work_rx) = tokio::sync::mpsc::channel(1);
       let handle =
-        tokio::spawn(async { future::pending::<anyhow::Result<()>>().await });
+        tokio::spawn(async { future::pending::<misstep::Result<()>>().await });
 
       abort_workers(vec![WorkerSlot {
         spec: local_worker(0),

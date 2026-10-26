@@ -12,20 +12,20 @@ default = [ "flake" ]
 flake   = [ "nix-bindings/flake" ]
 
 [dependencies]
-anyhow.workspace          = true
-capnp.workspace           = true
 capnp-futures.workspace   = true
+capnp.workspace           = true
 evix-protocol.workspace   = true
 futures-channel.workspace = true
 futures-core.workspace    = true
 futures-util.workspace    = true
 libc.workspace            = true
+misstep.workspace         = true
 nix-bindings.workspace    = true
 notify.workspace          = true
 serde.workspace           = true
 serde_json.workspace      = true
-tokio.workspace           = true
 tokio-util.workspace      = true
+tokio.workspace           = true
 tracing.workspace         = true
 
 [build-dependencies]

@@ -9,7 +9,7 @@ use std::{
   time::Duration,
 };
 
-use anyhow::{Context as _, Result, anyhow, bail};
+use misstep::{OptionExt as _, Result, ResultExt as _, bail, report};
 use tokio::{sync::mpsc, task::JoinHandle, time};
 use tracing::{debug, error, info, trace, warn};
 
@@ -474,7 +474,7 @@ async fn work_with_timeout(
     Err(_) => {
       worker.abort().await;
       let attr = display_attr(&item.path);
-      Err(anyhow!(
+      Err(report!(
         "worker {} timed out evaluating {attr} after {} seconds",
         spec.label,
         config.item_timeout_seconds
@@ -499,7 +499,7 @@ async fn abort_workers(workers: Vec<WorkerSlot>) -> Result<()> {
     match worker.handle.await {
       Ok(result) => result?,
       Err(err) if err.is_cancelled() => {},
-      Err(err) => return Err(err).context("worker task panicked"),
+      Err(err) => return Err(err).context("worker task panicked").erase(),
     }
   }
   Ok(())
@@ -551,7 +551,7 @@ fn display_attr(path: &[String]) -> String {
 fn worker_failure_event(
   spec: &WorkerSpec,
   item: &WorkItem,
-  error: anyhow::Error,
+  error: misstep::Report,
 ) -> Event {
   Event::Error(EvalError {
     attr:      display_attr(&item.path),

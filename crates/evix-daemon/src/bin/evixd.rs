@@ -1,6 +1,6 @@
 use std::{env, io, path::PathBuf};
 
-use anyhow::Result;
+use misstep::Result;
 use pound::Parse;
 
 #[derive(Parse)]

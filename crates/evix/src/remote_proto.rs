@@ -1,8 +1,8 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
-use anyhow::{Context as _, Result, bail};
 use capnp::message::{Builder, HeapAllocator, ReaderOptions};
 use futures_util::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
+use misstep::{Result, ResultExt as _, bail};
 
 use crate::{
   AutoArg,
@@ -295,9 +295,7 @@ fn read_worker_config(
     force_recurse:        reader.get_force_recurse(),
     gc_roots_dir:         read_text_opt(reader.get_gc_roots_dir()?)?
       .map(PathBuf::from),
-    max_memory_size:      reader
-      .get_max_memory_size()
-      .try_into()
+    max_memory_size:      usize::try_from(reader.get_max_memory_size())
       .context("maxMemorySize exceeds this platform's usize")?,
     item_timeout_seconds: read_item_timeout_seconds(reader),
     meta:                 reader.get_meta(),
@@ -622,10 +620,13 @@ fn read_text_list(reader: capnp::text_list::Reader<'_>) -> Result<Vec<String>> {
 fn list_len(len: usize, field: &str) -> Result<u32> {
   u32::try_from(len)
     .with_context(|| format!("{field} length exceeds Cap'n Proto list limit"))
+    .erase()
 }
 
 fn list_index(index: usize) -> Result<u32> {
-  u32::try_from(index).context("Cap'n Proto list index exceeds u32")
+  u32::try_from(index)
+    .context("Cap'n Proto list index exceeds u32")
+    .erase()
 }
 
 #[cfg(test)]

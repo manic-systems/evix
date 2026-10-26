@@ -18,10 +18,10 @@ use std::{
   thread,
 };
 
-use anyhow::{Context as _, Result, anyhow, bail};
 use evix::{Config, Filter};
 use evix_protocol::{Request, Response};
 use futures_util::StreamExt as _;
+use misstep::{Result, ResultExt as _, bail, report};
 use tokio::runtime::{Builder, Handle};
 use tracing::{error, info};
 
@@ -138,7 +138,7 @@ fn wait_for_connection_or_shutdown(
     }
     let err = std::io::Error::last_os_error();
     if err.kind() != std::io::ErrorKind::Interrupted {
-      return Err(err).context("polling daemon listener");
+      return Err(err).context("polling daemon listener").erase();
     }
     if SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
       return Ok(true);
@@ -198,6 +198,7 @@ fn bind_listener(
     let _umask = UmaskGuard::set(0o077);
     UnixListener::bind(socket)
       .with_context(|| format!("binding {}", socket.display()))
+      .erase()
   }) {
     Ok(listener) => listener,
     Err(err) => {
@@ -208,6 +209,7 @@ fn bind_listener(
   if let Err(err) =
     fs::set_permissions(socket, fs::Permissions::from_mode(0o600))
       .with_context(|| format!("setting permissions on {}", socket.display()))
+      .erase()
   {
     let _ = fs::remove_file(socket);
     let _ = reporter.error(&err);
@@ -236,9 +238,11 @@ fn prepare_socket_path(socket: &Path) -> Result<()> {
     Ok(metadata) => metadata,
     Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
     Err(err) => {
-      return Err(err).with_context(|| {
-        format!("checking existing socket path {}", socket.display())
-      });
+      return Err(err)
+        .with_context(|| {
+          format!("checking existing socket path {}", socket.display())
+        })
+        .erase();
     },
   };
 
@@ -251,9 +255,11 @@ fn prepare_socket_path(socket: &Path) -> Result<()> {
     Err(err) if err.kind() == std::io::ErrorKind::ConnectionRefused => {},
     Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
     Err(err) => {
-      return Err(err).with_context(|| {
-        format!("probing existing socket {}", socket.display())
-      });
+      return Err(err)
+        .with_context(|| {
+          format!("probing existing socket {}", socket.display())
+        })
+        .erase();
     },
   }
 
@@ -264,7 +270,7 @@ fn prepare_socket_path(socket: &Path) -> Result<()> {
 
 trait StartupReporter {
   fn ready(&mut self, socket: &Path) -> Result<()>;
-  fn error(&mut self, err: &anyhow::Error) -> Result<()>;
+  fn error(&mut self, err: &misstep::Report) -> Result<()>;
 }
 
 struct NoopStartupReporter;
@@ -274,7 +280,7 @@ impl StartupReporter for NoopStartupReporter {
     Ok(())
   }
 
-  fn error(&mut self, _err: &anyhow::Error) -> Result<()> {
+  fn error(&mut self, _err: &misstep::Report) -> Result<()> {
     Ok(())
   }
 }
@@ -302,7 +308,7 @@ impl StartupReporter for PipeStartupReporter {
     Ok(())
   }
 
-  fn error(&mut self, err: &anyhow::Error) -> Result<()> {
+  fn error(&mut self, err: &misstep::Report) -> Result<()> {
     write_response(&mut self.stream, &Response::error(err.to_string()))
   }
 }
@@ -326,7 +332,9 @@ fn redirect_stdio_to_dev_null() -> Result<()> {
           libc::close(source);
         }
       }
-      return Err(err).context("redirecting daemon stdio to /dev/null");
+      return Err(err)
+        .context("redirecting daemon stdio to /dev/null")
+        .erase();
     }
   }
 
@@ -350,7 +358,8 @@ fn stable_source_fd(fd: RawFd) -> Result<RawFd> {
   let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
   if duplicate < 0 {
     return Err(std::io::Error::last_os_error())
-      .context("duplicating /dev/null descriptor");
+      .context("duplicating /dev/null descriptor")
+      .erase();
   }
   Ok(duplicate)
 }
@@ -368,7 +377,8 @@ impl ShutdownSignals {
     // SAFETY: `fds` points to two writable integers populated by `pipe`.
     if unsafe { libc::pipe(fds.as_mut_ptr()) } < 0 {
       return Err(std::io::Error::last_os_error())
-        .context("creating daemon shutdown pipe");
+        .context("creating daemon shutdown pipe")
+        .erase();
     }
 
     if let Err(err) = configure_signal_pipe(fds[0], fds[1]) {
@@ -433,11 +443,15 @@ fn set_fd_cloexec(fd: RawFd) -> Result<()> {
   // SAFETY: reads descriptor flags for a valid file descriptor.
   let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
   if flags < 0 {
-    return Err(std::io::Error::last_os_error()).context("reading fd flags");
+    return Err(std::io::Error::last_os_error())
+      .context("reading fd flags")
+      .erase();
   }
   // SAFETY: writes descriptor flags for the same valid file descriptor.
   if unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
-    return Err(std::io::Error::last_os_error()).context("setting fd cloexec");
+    return Err(std::io::Error::last_os_error())
+      .context("setting fd cloexec")
+      .erase();
   }
   Ok(())
 }
@@ -446,12 +460,15 @@ fn set_fd_nonblocking(fd: RawFd) -> Result<()> {
   // SAFETY: reads status flags for a valid file descriptor.
   let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
   if flags < 0 {
-    return Err(std::io::Error::last_os_error()).context("reading fd status");
+    return Err(std::io::Error::last_os_error())
+      .context("reading fd status")
+      .erase();
   }
   // SAFETY: writes status flags for the same valid file descriptor.
   if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
     return Err(std::io::Error::last_os_error())
-      .context("setting fd nonblocking");
+      .context("setting fd nonblocking")
+      .erase();
   }
   Ok(())
 }
@@ -464,7 +481,8 @@ fn install_shutdown_handler(signal: libc::c_int) -> Result<libc::sigaction> {
   // SAFETY: initializes the signal mask owned by `action`.
   if unsafe { libc::sigemptyset(&mut action.sa_mask) } < 0 {
     return Err(std::io::Error::last_os_error())
-      .context("initializing signal mask");
+      .context("initializing signal mask")
+      .erase();
   }
 
   // SAFETY: zero initialization provides storage for the old action populated
@@ -473,7 +491,8 @@ fn install_shutdown_handler(signal: libc::c_int) -> Result<libc::sigaction> {
   // SAFETY: installs a simple async-signal-safe handler for SIGINT/SIGTERM.
   if unsafe { libc::sigaction(signal, &action, &mut old_action) } < 0 {
     return Err(std::io::Error::last_os_error())
-      .context("installing daemon signal handler");
+      .context("installing daemon signal handler")
+      .erase();
   }
   Ok(old_action)
 }
@@ -522,19 +541,20 @@ fn daemonize(socket: &Path, pid_file: PathBuf) -> Result<PipeStartupReporter> {
   let reporter = PipeStartupReporter::new(writer, pid_file);
 
   if unsafe { libc::setsid() } < 0 {
-    exit_after_startup_error(reporter, anyhow!("setsid failed"));
+    exit_after_startup_error(reporter, report!("setsid failed"));
   }
 
   let pid = unsafe { libc::fork() };
   if pid < 0 {
-    exit_after_startup_error(reporter, anyhow!("second fork failed"));
+    exit_after_startup_error(reporter, report!("second fork failed"));
   }
   if pid > 0 {
     process::exit(0);
   }
 
-  if let Err(err) =
-    env::set_current_dir("/").context("changing daemon working directory to /")
+  if let Err(err) = env::set_current_dir("/")
+    .context("changing daemon working directory to /")
+    .erase()
   {
     exit_after_startup_error(reporter, err);
   }
@@ -551,9 +571,11 @@ fn wait_for_readiness(socket: &Path, reader: UnixStream) -> ! {
   let result = BufReader::new(reader)
     .read_line(&mut line)
     .context("reading daemon readiness")
+    .erase()
     .and_then(|_| {
       serde_json::from_str::<Response>(line.trim())
         .context("parsing daemon readiness")
+        .erase()
     });
 
   match result {
@@ -578,7 +600,7 @@ fn wait_for_readiness(socket: &Path, reader: UnixStream) -> ! {
 
 fn exit_after_startup_error(
   mut reporter: PipeStartupReporter,
-  err: anyhow::Error,
+  err: misstep::Report,
 ) -> ! {
   let _ = reporter.error(&err);
   process::exit(1);
@@ -606,18 +628,20 @@ fn handle_connection(
     return Ok(());
   }
 
-  let request: Request =
-    match serde_json::from_str(line.trim()).context("parsing daemon request") {
-      Ok(request) => request,
-      Err(err) => {
-        let _ = write_response(&mut stream, &Response::error(err.to_string()));
-        return Err(err);
-      },
-    };
+  let request: Request = match serde_json::from_str(line.trim())
+    .context("parsing daemon request")
+    .erase()
+  {
+    Ok(request) => request,
+    Err(err) => {
+      let _ = write_response(&mut stream, &Response::error(err.to_string()));
+      return Err(err);
+    },
+  };
   if let Err(err) = request.validate_protocol() {
     let message = err.to_string();
     let _ = write_response(&mut stream, &Response::error(message));
-    return Err(anyhow::Error::new(err));
+    return Err(misstep::Report::new(err));
   }
 
   let result = runtime.block_on(async {
@@ -668,7 +692,8 @@ fn authorize_peer(stream: &UnixStream) -> Result<()> {
     };
     if rc != 0 {
       return Err(std::io::Error::last_os_error())
-        .context("reading daemon peer credentials");
+        .context("reading daemon peer credentials")
+        .erase();
     }
     let uid = unsafe { libc::geteuid() };
     if cred.uid != uid {
@@ -698,7 +723,9 @@ fn read_request_line(stream: &UnixStream) -> Result<String> {
       bytes.pop();
     }
   }
-  String::from_utf8(bytes).context("daemon request is not UTF-8")
+  String::from_utf8(bytes)
+    .context("daemon request is not UTF-8")
+    .erase()
 }
 
 fn read_limited_line<R: BufRead>(
