@@ -12,9 +12,7 @@ fn main() {
   let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
   let generated = out_path.join(GENERATED_FILE);
 
-  // docs.rs does not provide the Cap'n Proto compiler. Use the checked-in
-  // generated schema instead.
-  if env::var("DOCS_RS").is_ok() {
+  if env::var_os("EVIX_REGENERATE_SCHEMA").is_none() {
     fs::copy(CHECKED_IN_GENERATED, generated)
       .expect("copy generated Cap'n Proto schema");
     return;
@@ -26,8 +24,6 @@ fn main() {
     .run()
     .expect("compile worker Cap'n Proto schema");
 
-  if env::var_os("EVIX_REGENERATE_SCHEMA").is_some() {
-    fs::copy(generated, CHECKED_IN_GENERATED)
-      .expect("update checked-in Cap'n Proto schema");
-  }
+  fs::copy(generated, CHECKED_IN_GENERATED)
+    .expect("update checked-in Cap'n Proto schema");
 }

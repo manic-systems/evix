@@ -2,15 +2,16 @@
 
 ## Worker schema
 
-The worker protocol lives in `crates/evix/schema/worker.capnp`, and builds
-compile it into `OUT_DIR`. docs.rs has no `capnp` binary, so it uses the
-generated Rust checked in at `crates/evix/src/generated/worker_capnp.rs`.
+The worker protocol lives in `crates/evix/schema/worker.capnp`. Builds copy
+the generated Rust checked in at `crates/evix/src/generated/worker_capnp.rs`
+into `OUT_DIR`, so compiling evix needs no `capnp` binary.
 
-Builds don't touch that file, so if you change the schema or bump `capnpc`,
-regenerate it and commit it with your change:
+If you change the schema or bump `capnpc`, regenerate that file with `capnp`
+installed and commit it with your change:
 
 ```sh
 EVIX_REGENERATE_SCHEMA=1 cargo build -p evix
 ```
 
-A test fails if the checked-in copy and the generated one differ.
+The `schema` flake check regenerates it with the `capnp` from `flake.lock`
+and fails if the checked-in copy differs.
