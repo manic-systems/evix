@@ -343,12 +343,15 @@ fn flake_parse_flags(
 ) -> Result<nix_bindings::flake::FlakeReferenceParseFlags> {
   let base_dir =
     env::current_dir().context("resolving flake base directory")?;
-  nix_bindings::flake::FlakeReferenceParseFlags::new(ctx, flake_settings)
-    .context("parse flags")?
-    .set_base_directory(&base_dir.to_string_lossy())
-    .with_context(|| {
-      format!("setting flake base directory {}", base_dir.display())
-    })
+  let flags =
+    nix_bindings::flake::FlakeReferenceParseFlags::new(ctx, flake_settings)
+      .context("parse flags")?;
+  let Some(base_dir) = base_dir.to_str() else {
+    return Ok(flags);
+  };
+  flags
+    .set_base_directory(base_dir)
+    .with_context(|| format!("setting flake base directory {base_dir}"))
     .erase()
 }
 

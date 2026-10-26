@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use capnp::message::{Builder, HeapAllocator, ReaderOptions};
 use futures_util::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
-use misstep::{Result, ResultExt as _, bail};
+use misstep::{OptionExt as _, Result, ResultExt as _, bail};
 
 use crate::{
   AutoArg,
@@ -239,7 +239,7 @@ fn set_worker_config(
   mut builder: worker_capnp::worker_config::Builder<'_>,
   config: &WorkerConfig,
 ) -> Result<()> {
-  set_input(builder.reborrow().init_input(), &config.input);
+  set_input(builder.reborrow().init_input(), &config.input)?;
 
   let mut auto_args = builder
     .reborrow()
@@ -259,8 +259,12 @@ fn set_worker_config(
     config
       .gc_roots_dir
       .as_ref()
-      .map(|path| path.to_string_lossy().into_owned())
-      .as_deref(),
+      .map(|path| {
+        path.to_str().with_context(|| {
+          format!("gc roots directory {path:?} is not valid UTF-8")
+        })
+      })
+      .transpose()?,
   );
   builder.set_max_memory_size(config.max_memory_size as u64);
   builder.set_item_timeout_seconds(config.item_timeout_seconds);
@@ -315,12 +319,22 @@ fn read_item_timeout_seconds(
   }
 }
 
-fn set_input(mut builder: worker_capnp::input::Builder<'_>, input: &Input) {
+fn set_input(
+  mut builder: worker_capnp::input::Builder<'_>,
+  input: &Input,
+) -> Result<()> {
   match input {
     Input::Flake(value) => builder.set_flake(value),
     Input::Expr(value) => builder.set_expr(value),
-    Input::File(path) => builder.set_file(path.to_string_lossy()),
+    Input::File(path) => {
+      builder.set_file(
+        path
+          .to_str()
+          .with_context(|| format!("input file {path:?} is not valid UTF-8"))?,
+      );
+    },
   }
+  Ok(())
 }
 
 fn read_input(reader: worker_capnp::input::Reader<'_>) -> Result<Input> {
