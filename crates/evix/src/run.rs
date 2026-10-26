@@ -3,7 +3,7 @@ use std::{
   sync::{Arc, atomic::AtomicBool},
 };
 
-use anyhow::Result;
+use misstep::Result;
 
 pub(crate) use crate::async_master::RunOutcome;
 use crate::{

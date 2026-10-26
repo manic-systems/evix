@@ -12,12 +12,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anyhow"
-version = "1.0.104"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
-
-[[package]]
 name = "bindgen"
 version = "0.73.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -141,7 +135,6 @@ dependencies = [
 name = "evix"
 version = "3.0.2"
 dependencies = [
- "anyhow",
  "capnp",
  "capnp-futures",
  "capnpc",
@@ -150,6 +143,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "libc",
+ "misstep",
  "nix-bindings",
  "notify",
  "serde",
@@ -163,7 +157,6 @@ dependencies = [
 name = "evix-cli"
 version = "3.0.2"
 dependencies = [
- "anyhow",
  "evix",
  "evix-daemon",
  "evix-protocol",
@@ -180,11 +173,11 @@ dependencies = [
 name = "evix-daemon"
 version = "3.0.2"
 dependencies = [
- "anyhow",
  "evix",
  "evix-protocol",
  "futures-util",
  "libc",
+ "misstep",
  "pound",
  "serde",
  "serde_json",

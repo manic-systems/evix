@@ -7,7 +7,7 @@ use std::{
   path::{Component, Path, PathBuf},
 };
 
-use anyhow::{Context as _, Result, bail};
+use misstep::{OptionExt as _, Result, ResultExt as _, bail};
 use nix_bindings::{EvalState, Store, StorePath, Value, ValueType};
 use tracing::{debug, warn};
 
@@ -529,7 +529,8 @@ fn create_gc_root_link(gc_dir: &Path, drv_path: &str) -> Result<()> {
     Err(err) if err.kind() == io::ErrorKind::NotFound => {},
     Err(err) => {
       return Err(err)
-        .with_context(|| format!("checking gc root {}", link.display()));
+        .with_context(|| format!("checking gc root {}", link.display()))
+        .erase();
     },
   }
 

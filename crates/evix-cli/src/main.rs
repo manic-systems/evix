@@ -10,12 +10,12 @@ use std::{
   process,
 };
 
-use anyhow::{Context as _, Result, bail};
 use args::{CommandPlan, Verbosity, parse_plan};
 use evix::{Config, Event, Input, Session, json as evix_json};
 use evix_daemon as daemon;
 use evix_protocol::{Config as WireConfig, Request, Response};
 use futures_util::StreamExt as _;
+use misstep::{Result, ResultExt as _, bail};
 use tokio::runtime::Builder;
 use tracing::{info, warn};
 
@@ -44,14 +44,10 @@ fn main() {
   }
 }
 
-fn run_cli() -> misstep::Result<()> {
-  let (verbosity, plan) = parse_plan().map_err(report)?;
+fn run_cli() -> Result<()> {
+  let (verbosity, plan) = parse_plan()?;
   init_tracing_subscriber(verbosity);
-  run_plan(plan).map_err(report)
-}
-
-fn report(err: anyhow::Error) -> misstep::Report {
-  misstep::Report::from_boxed(err.into_boxed_dyn_error())
+  run_plan(plan)
 }
 
 fn run_plan(plan: CommandPlan) -> Result<()> {
@@ -188,6 +184,7 @@ fn canonical_flake_path(path: &str) -> Result<String> {
   fs::canonicalize(path)
     .with_context(|| format!("canonicalizing flake path {path:?}"))
     .map(|path| path.to_string_lossy().into_owned())
+    .erase()
 }
 
 fn run_client_or_local(
@@ -211,8 +208,8 @@ fn run_daemon_only(request: Request, socket: Option<PathBuf>) -> Result<()> {
   }
 }
 
-fn daemon_connect_error(socket: &Path, err: io::Error) -> anyhow::Error {
-  anyhow::Error::new(err).context(daemon_connect_context(socket))
+fn daemon_connect_error(socket: &Path, err: io::Error) -> misstep::Report {
+  misstep::Report::new(err).context(daemon_connect_context(socket))
 }
 
 fn daemon_connect_context(socket: &Path) -> String {
@@ -320,7 +317,7 @@ fn write_output_line<W: Write>(
     Err(err) if err.kind() == io::ErrorKind::BrokenPipe => {
       Ok(OutputWrite::Closed)
     },
-    Err(err) => Err(err).context("writing stdout"),
+    Err(err) => Err(err).context("writing stdout").erase(),
   }
 }
 
@@ -652,8 +649,11 @@ mod tests {
     assert!(!line.trim().is_empty());
   }
 
-  fn error_chain_messages(error: &anyhow::Error) -> Vec<String> {
-    error.chain().map(ToString::to_string).collect()
+  fn error_chain_messages(error: &misstep::Report) -> Vec<String> {
+    let contexts = error.contexts().iter().rev().map(ToString::to_string);
+    contexts
+      .chain(error.chain().map(ToString::to_string))
+      .collect()
   }
 
   fn unique_socket_path(name: &str) -> PathBuf {

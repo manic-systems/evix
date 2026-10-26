@@ -2,7 +2,7 @@
 use std::{collections::BTreeSet, env, path::Path};
 use std::{mem::MaybeUninit, sync::Arc};
 
-use anyhow::{Context as _, Result, bail};
+use misstep::{OptionExt as _, Result, ResultExt as _, bail};
 use nix_bindings::{Context, EvalState, EvalStateBuilder, Store, Value};
 use tokio::io::{BufReader, BufWriter};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -121,7 +121,7 @@ fn build_eval_state(
       .context("applying flake settings")?;
   }
 
-  builder.build().context("building eval state")
+  builder.build().context("building eval state").erase()
 }
 
 /// Evaluate the configured input (flake, expr, or file) and return the root
@@ -311,6 +311,7 @@ pub(crate) fn export_locked_flake(config: &Config) -> Result<Option<String>> {
     .export_json()
     .map(Some)
     .context("exporting locked flake graph")
+    .erase()
 }
 
 #[cfg(feature = "flake")]
@@ -348,6 +349,7 @@ fn flake_parse_flags(
     .with_context(|| {
       format!("setting flake base directory {}", base_dir.display())
     })
+    .erase()
 }
 
 #[cfg(feature = "flake")]
@@ -410,6 +412,7 @@ fn lock_flake(
   } else {
     "locking flake"
   })
+  .erase()
 }
 
 #[cfg(feature = "flake")]
@@ -503,7 +506,8 @@ fn get_maxrss_kb() -> Result<usize> {
     unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) };
   if result == -1 {
     return Err(std::io::Error::last_os_error())
-      .context("getrusage(RUSAGE_SELF)");
+      .context("getrusage(RUSAGE_SELF)")
+      .erase();
   }
   // SAFETY: a successful `getrusage` call initializes the entire `rusage`.
   let usage = unsafe { usage.assume_init() };

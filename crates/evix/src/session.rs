@@ -7,10 +7,10 @@ use std::{
   },
 };
 
-use anyhow::{Result as AnyhowResult, anyhow};
 use futures_channel::mpsc as futures_mpsc;
 use futures_core::Stream;
 use futures_util::SinkExt as _;
+use misstep::{Result as ReportResult, report};
 use tokio::sync::{Notify, RwLock};
 use tracing::{debug, error};
 
@@ -98,7 +98,7 @@ impl Session {
             async move {
               event_tx
                 .unbounded_send(Ok(event))
-                .map_err(|_| anyhow!("session stream receiver was dropped"))
+                .map_err(|_| report!("session stream receiver was dropped"))
             }
           },
         )
@@ -169,7 +169,7 @@ impl Session {
               event_tx
                 .send(Ok(event))
                 .await
-                .map_err(|_| anyhow!("session stream receiver was dropped"))
+                .map_err(|_| report!("session stream receiver was dropped"))
             }
           },
         )
@@ -460,10 +460,10 @@ async fn evaluate_initial<F, Fut>(
   state: Arc<RwLock<WarmState>>,
   completed: Arc<Notify>,
   on_event: F,
-) -> AnyhowResult<RunOutcome>
+) -> ReportResult<RunOutcome>
 where
   F: FnMut(Event) -> Fut + Send + 'static,
-  Fut: Future<Output = AnyhowResult<()>>,
+  Fut: Future<Output = ReportResult<()>>,
 {
   debug!("starting session evaluation");
   let result = run::evaluate_async(config, Arc::clone(&cancel), on_event).await;
@@ -576,7 +576,7 @@ impl Drop for Session {
 
 #[cfg(test)]
 mod tests {
-  use std::{error::Error as _, process};
+  use std::process;
 
   use futures_util::StreamExt as _;
 
@@ -646,7 +646,6 @@ mod tests {
       let mut first = Box::pin(session.stream());
       let first_error = first.next().await.unwrap().unwrap_err();
 
-      assert!(first_error.source().is_some());
       assert!(first_error.to_string().contains("spawning worker process"));
       assert!(first.next().await.is_none());
 

@@ -4,9 +4,9 @@ use std::{
   time::{SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Result, anyhow};
 use evix::{Config, Error, Event, Filter, Session};
 use futures_util::StreamExt as _;
+use misstep::{Result, report};
 
 const EXPR: &str = r#"
 let
@@ -74,7 +74,7 @@ async fn stream_query_and_diff() -> Result<()> {
   let hello = derivations
     .iter()
     .find(|derivation| derivation.attr == "jobs.hello")
-    .ok_or_else(|| anyhow!("missing jobs.hello derivation"))?;
+    .ok_or_else(|| report!("missing jobs.hello derivation"))?;
   let queried = session
     .query_snapshot(Filter {
       systems: Some(vec![hello.system.clone()]),
@@ -107,7 +107,7 @@ async fn cancellation_drop_and_single_use() -> Result<()> {
   let error = second
     .next()
     .await
-    .ok_or_else(|| anyhow!("missing duplicate stream error"))?
+    .ok_or_else(|| report!("missing duplicate stream error"))?
     .unwrap_err();
 
   assert!(matches!(error, Error::SessionStreamConsumed));
@@ -158,7 +158,7 @@ async fn flake_without_lock_uses_exported_graph() -> Result<()> {
     .current_dir(&fixture)
     .status()?;
   if !status.success() {
-    return Err(anyhow!("creating flake fixture Git repository failed"));
+    return Err(report!("creating flake fixture Git repository failed"));
   }
 
   let result = async {
@@ -176,7 +176,7 @@ async fn flake_without_lock_uses_exported_graph() -> Result<()> {
     }) {
       Ok(())
     } else {
-      Err(anyhow!("missing packages.x86_64-linux.hello derivation"))
+      Err(report!("missing packages.x86_64-linux.hello derivation"))
     }
   }
   .await;

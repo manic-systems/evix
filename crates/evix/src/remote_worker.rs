@@ -1,8 +1,8 @@
 #[cfg(unix)] use std::os::fd::AsRawFd as _;
 use std::{mem, sync::Arc, time::Duration};
 
-use anyhow::{Context as _, Result, bail};
 use futures_util::{AsyncRead, FutureExt as _};
+use misstep::{Result, ResultExt as _, bail};
 use nix_bindings::{Context as NixContext, Store};
 use tokio::{
   net::{TcpListener, TcpStream},
@@ -228,7 +228,7 @@ impl RemoteWorker {
     self
       .stream
       .as_mut()
-      .ok_or_else(|| anyhow::anyhow!("remote worker {} is closed", self.label))
+      .ok_or_else(|| misstep::report!("remote worker {} is closed", self.label))
   }
 }
 
@@ -288,7 +288,7 @@ async fn serve_connection(
           Err(err) => {
             remote_proto::write_server(
               &mut stream,
-              &ServerMessage::Error(format!("{err:?}")),
+              &ServerMessage::Error(err.to_string()),
             )
             .await?;
             return Err(err);
@@ -376,7 +376,7 @@ fn validate_store_dir_against(expected: &str, actual: &str) -> Result<()> {
 fn local_store_dir() -> Result<String> {
   let ctx = Arc::new(NixContext::new().context("Nix context")?);
   let store = Store::open(&ctx, None).context("Nix store")?;
-  store.store_dir().context("Nix store dir")
+  store.store_dir().context("Nix store dir").erase()
 }
 
 fn token_matches(actual: Option<&str>, expected: Option<&str>) -> bool {
@@ -430,14 +430,14 @@ fn set_tcp_keepalive(stream: &TcpStream) -> Result<()> {
       libc::SOL_SOCKET,
       libc::SO_KEEPALIVE,
       (&raw const enabled).cast(),
-      mem::size_of_val(&enabled)
-        .try_into()
+      libc::socklen_t::try_from(mem::size_of_val(&enabled))
         .context("SO_KEEPALIVE option length does not fit socklen_t")?,
     )
   };
   if result == -1 {
     return Err(std::io::Error::last_os_error())
-      .context("setsockopt(SO_KEEPALIVE)");
+      .context("setsockopt(SO_KEEPALIVE)")
+      .erase();
   }
   Ok(())
 }

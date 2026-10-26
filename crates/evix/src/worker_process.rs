@@ -8,7 +8,7 @@ use std::{
   time::{SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context as _, Result, anyhow, bail};
+use misstep::{OptionExt as _, Report, Result, ResultExt as _, bail};
 use tokio::{
   io::{AsyncRead, AsyncReadExt as _, BufReader},
   process::{Child, ChildStdin, ChildStdout, Command},
@@ -202,8 +202,8 @@ impl WorkerProcess {
     &mut self,
     phase: &str,
     attr: &str,
-    source: anyhow::Error,
-  ) -> anyhow::Error {
+    source: misstep::Report,
+  ) -> misstep::Report {
     let status = self.proc.wait().await.ok();
     let stderr = self.take_stderr().await;
     let stderr = stderr.trim();
@@ -218,7 +218,7 @@ impl WorkerProcess {
       message.push_str("\nworker stderr:\n");
       message.push_str(stderr);
     }
-    anyhow!(message)
+    Report::msg(message)
   }
 }
 
@@ -303,7 +303,9 @@ fn nix_user_conf_files(
     paths.push(default_config);
   }
 
-  env::join_paths(paths).context("joining NIX_USER_CONF_FILES")
+  env::join_paths(paths)
+    .context("joining NIX_USER_CONF_FILES")
+    .erase()
 }
 
 fn default_nix_user_conf_file() -> Option<PathBuf> {

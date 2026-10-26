@@ -4,8 +4,8 @@ use std::{
   sync::{Arc, Mutex},
 };
 
-use anyhow::{Context as _, Result, bail};
 use evix::{AutoArg, Config, Input, Remote, Session};
+use misstep::{Result, ResultExt as _, bail};
 use serde::Serialize;
 
 const MAX_SESSIONS: usize = 32;
@@ -58,7 +58,7 @@ impl DaemonState {
       .get(&key)
       .map(|cached| Arc::clone(&cached.session))
       .ok_or_else(|| {
-        anyhow::anyhow!(
+        misstep::report!(
           "no warm session for requested daemon config; query/diff reuse a \
            session only when all daemon-protocol config values match a \
            completed eval or watch"
@@ -170,6 +170,7 @@ impl<T> SessionRegistry<T> {
 pub(crate) fn session_key(config: &Config) -> Result<String> {
   serde_json::to_string(&SessionKeyConfig::from(config))
     .context("serializing session key")
+    .erase()
 }
 
 #[derive(Serialize)]
