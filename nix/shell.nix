@@ -10,7 +10,7 @@
   pkg-config,
   capnproto,
   nixVersions,
-  nixForBindings ? nixVersions.nix_2_34,
+  nixForBindings ? nixVersions.nix_2_35,
   glibc,
   cargo-nextest,
   jq,

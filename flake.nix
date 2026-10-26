@@ -11,7 +11,7 @@
 
     # nix-bindings links against Nix C++ headers; package and dev shell must
     # agree on this version until the crate compatibility window changes.
-    nixForBindingsFor = pkgs: pkgs.nixVersions.nix_2_34;
+    nixForBindingsFor = pkgs: pkgs.nixVersions.nix_2_35;
   in {
     packages = forEachSystem (system: let
       pkgs = pkgsForEach system;
