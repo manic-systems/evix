@@ -1,6 +1,7 @@
 use std::{
   collections::VecDeque,
   future::Future,
+  panic::AssertUnwindSafe,
   path::PathBuf,
   sync::{
     Arc,
@@ -9,6 +10,7 @@ use std::{
   time::Duration,
 };
 
+use futures_util::FutureExt as _;
 use misstep::{OptionExt as _, Result, ResultExt as _, bail, report};
 use tokio::{sync::mpsc, task::JoinHandle, time};
 use tracing::{debug, error, info, trace, warn};
@@ -67,6 +69,11 @@ struct WorkerResult {
   worker_id: usize,
   item:      WorkItem,
   event:     Result<Event>,
+}
+
+enum WorkerMessage {
+  Result(Box<WorkerResult>),
+  Exited { error: String },
 }
 
 enum EventDisposition {
@@ -143,6 +150,7 @@ where
     on_event,
   )
   .await;
+  drop(result_rx);
   if matches!(result, Ok(RunOutcome::Cancelled)) {
     abort_workers(workers).await?;
   } else {
@@ -310,7 +318,7 @@ impl Scheduler {
 async fn coordinate<F, Fut>(
   scheduler: &mut Scheduler,
   workers: &mut [WorkerSlot],
-  result_rx: &mut mpsc::Receiver<WorkerResult>,
+  result_rx: &mut mpsc::Receiver<WorkerMessage>,
   cancel: &AtomicBool,
   specs: &[WorkerSpec],
   mut on_event: F,
@@ -339,10 +347,14 @@ where
       bail!("scheduler stalled with no active workers");
     }
 
-    let result = result_rx
+    let message = result_rx
       .recv()
       .await
       .context("all worker tasks exited before evaluation completed")?;
+    let result = match message {
+      WorkerMessage::Result(result) => *result,
+      WorkerMessage::Exited { error } => bail!("{error}"),
+    };
     let worker_id = result.worker_id;
     idle.push_back(worker_id);
     let spec = &workers[worker_id].spec;
@@ -416,8 +428,27 @@ async fn worker_task(
   config: WorkerConfig,
   spec: WorkerSpec,
   cancel: Arc<AtomicBool>,
+  work_rx: mpsc::Receiver<WorkerCommand>,
+  result_tx: mpsc::Sender<WorkerMessage>,
+) -> Result<()> {
+  let served =
+    AssertUnwindSafe(serve_worker(config, spec, cancel, work_rx, &result_tx))
+      .catch_unwind()
+      .await;
+  let result = served.unwrap_or_else(|_| Err(report!("worker task panicked")));
+  if let Err(err) = &result {
+    let error = format!("{err}");
+    let _ = result_tx.send(WorkerMessage::Exited { error }).await;
+  }
+  result
+}
+
+async fn serve_worker(
+  config: WorkerConfig,
+  spec: WorkerSpec,
+  cancel: Arc<AtomicBool>,
   mut work_rx: mpsc::Receiver<WorkerCommand>,
-  result_tx: mpsc::Sender<WorkerResult>,
+  result_tx: &mpsc::Sender<WorkerMessage>,
 ) -> Result<()> {
   let mut worker = WorkerClient::connect(&config, &spec).await?;
 
@@ -440,11 +471,11 @@ async fn worker_task(
       };
     let failed = event.is_err();
     if result_tx
-      .send(WorkerResult {
+      .send(WorkerMessage::Result(Box::new(WorkerResult {
         worker_id: spec.id,
         item,
         event,
-      })
+      })))
       .await
       .is_err()
     {

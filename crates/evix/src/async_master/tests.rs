@@ -4,7 +4,6 @@ use std::{
   time::Duration,
 };
 
-use futures_util::FutureExt as _;
 use misstep::report;
 use tokio_util::compat::TokioAsyncReadCompatExt as _;
 
