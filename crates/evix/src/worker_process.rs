@@ -5,14 +5,15 @@ use std::{
   fs,
   path::{Path, PathBuf},
   process::{self, Stdio},
-  time::{SystemTime, UNIX_EPOCH},
+  time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use misstep::{OptionExt as _, Report, Result, ResultExt as _, bail};
+use misstep::{OptionExt as _, Report, Result, ResultExt as _, bail, report};
 use tokio::{
   io::{AsyncRead, AsyncReadExt as _, BufReader},
   process::{Child, ChildStdin, ChildStdout, Command},
   task::JoinHandle,
+  time,
 };
 use tokio_util::compat::{
   Compat,
@@ -85,14 +86,7 @@ impl WorkerProcess {
       .spawn()
       .with_context(|| format!("spawning worker process for {label}"))?;
 
-    let mut stdin = child.stdin.take().context("worker stdin")?.compat_write();
-    write_client(&mut stdin, &ClientMessage::Setup {
-      config:             config.clone(),
-      token:              None,
-      expected_store_dir: None,
-    })
-    .await?;
-
+    let stdin = child.stdin.take().context("worker stdin")?.compat_write();
     let stdout =
       BufReader::new(child.stdout.take().context("worker stdout")?).compat();
     let stderr = child.stderr.take().context("worker stderr")?;
@@ -108,7 +102,29 @@ impl WorkerProcess {
       stderr_task: Some(stderr_task),
       _nix_options_file: nix_options_file,
     };
-    worker.read_ready().await?;
+    let setup = ClientMessage::Setup {
+      config:             config.clone(),
+      token:              None,
+      expected_store_dir: None,
+    };
+    let startup = Duration::from_secs(config.item_timeout_seconds);
+    let handshake = async {
+      if let Err(err) = write_client(&mut worker.stdin, &setup).await {
+        return Err(worker.exit_error("setup", "<startup>", err).await);
+      }
+      worker.read_ready().await
+    };
+    match time::timeout(startup, handshake).await {
+      Ok(result) => result?,
+      Err(_) => {
+        let _ = worker.proc.start_kill();
+        let source = report!(
+          "worker did not start within {}s",
+          config.item_timeout_seconds
+        );
+        return Err(worker.exit_error("handshake", "<startup>", source).await);
+      },
+    }
     info!(worker = %worker.label, "worker ready");
 
     Ok(worker)
