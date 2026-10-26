@@ -19,6 +19,7 @@ use crate::{
   Config,
   EvalError,
   Event,
+  Input,
   Remote,
   remote_worker::RemoteWorker,
   worker_config::WorkerConfig,
@@ -161,6 +162,9 @@ where
 
 async fn worker_config(config: &Config) -> Result<WorkerConfig> {
   let mut worker_config = WorkerConfig::from(config);
+  if let Input::File(path) = &mut worker_config.input {
+    *path = std::path::absolute(&*path).context("resolving file path")?;
+  }
   worker_config.locked_flake_json = export_locked_flake(config).await?;
   Ok(worker_config)
 }
