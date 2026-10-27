@@ -49,6 +49,16 @@ jobs:
       build-command: nix build .#checks.x86_64-linux.eval -L --no-link
       cache: true
 
+  clippy:
+    name: Clippy
+    needs: checks
+    uses: manic-systems/workflows/.github/workflows/nix-checks.yml@ec457510b197b2eeb8b2ea2d182f31e3ed7157bd # v2.3.3
+    with:
+      flake-check: false
+      build: true
+      build-command: nix build .#checks.x86_64-linux.clippy -L --no-link
+      cache: true
+
   schema:
     name: Worker Schema
     needs: checks
@@ -68,6 +78,7 @@ jobs:
     if: always()
     needs:
       - checks
+      - clippy
       - eval
       - schema
       - actions

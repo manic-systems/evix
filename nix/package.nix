@@ -21,6 +21,7 @@ in
       fs.toSource {
         root = s;
         fileset = fs.unions [
+          (s + /.clippy.toml)
           (s + /crates)
           (s + /Cargo.lock)
           (s + /Cargo.toml)
