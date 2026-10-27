@@ -42,6 +42,18 @@
         evix = self.packages.${system}.evix;
       };
 
+      clippy = self.packages.${system}.evix.overrideAttrs (old: {
+        pname = "evix-clippy";
+        nativeBuildInputs = old.nativeBuildInputs ++ [pkgs.clippy];
+        doCheck = false;
+        buildPhase = /* sh */ ''
+          cargo clippy --workspace --all-targets --offline -- -D warnings
+        '';
+        installPhase = /* sh */ ''
+          touch $out
+        '';
+      });
+
       schema = self.packages.${system}.evix.overrideAttrs (old: {
         pname = "evix-schema";
         nativeBuildInputs = old.nativeBuildInputs ++ [pkgs.capnproto];
