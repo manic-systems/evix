@@ -74,6 +74,7 @@ struct WorkerResult {
 
 enum WorkerMessage {
   Result(Box<WorkerResult>),
+  Cancelled,
   Exited { error: String },
 }
 
@@ -357,6 +358,7 @@ where
       .context("all worker tasks exited before evaluation completed")?;
     let result = match message {
       WorkerMessage::Result(result) => *result,
+      WorkerMessage::Cancelled => return Ok(RunOutcome::Cancelled),
       WorkerMessage::Exited { error } => bail!("{error}"),
     };
     let worker_id = result.worker_id;
@@ -459,6 +461,7 @@ async fn serve_worker(
   while let Some(command) = work_rx.recv().await {
     if cancel.load(Ordering::Relaxed) {
       info!(worker = %spec.label, "cancellation requested, worker exiting");
+      let _ = result_tx.send(WorkerMessage::Cancelled).await;
       break;
     }
 
