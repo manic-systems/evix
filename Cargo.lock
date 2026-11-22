@@ -181,7 +181,6 @@ dependencies = [
  "mimalloc-ng",
  "misstep",
  "pound",
- "serde",
  "serde_json",
  "tokio",
  "tracing",

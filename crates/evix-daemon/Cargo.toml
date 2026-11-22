@@ -15,7 +15,6 @@ libc.workspace               = true
 mimalloc-ng.workspace        = true
 misstep.workspace            = true
 pound.workspace              = true
-serde.workspace              = true
 serde_json.workspace         = true
 tokio.workspace              = true
 tracing-subscriber.workspace = true
