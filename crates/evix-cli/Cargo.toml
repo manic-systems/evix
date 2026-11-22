@@ -8,6 +8,7 @@ license.workspace      = true
 repository.workspace   = true
 
 [dependencies]
+caress.workspace             = true
 evix-daemon.workspace        = true
 evix-protocol.workspace      = true
 evix.workspace               = true
