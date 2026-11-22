@@ -17,6 +17,7 @@ use evix_protocol::{Config as WireConfig, Request, Response};
 use futures_util::StreamExt as _;
 use mimalloc_ng::{MiMalloc, option::Number};
 use misstep::{Result, ResultExt as _, bail, report};
+use pound::Parse as _;
 use tokio::runtime::Builder;
 use tracing::{info, warn};
 
@@ -30,6 +31,8 @@ enum OutputWrite {
 }
 
 fn main() {
+  caress::handle(args::Cli::SPEC);
+
   // SAFETY: no other thread exists yet to run mimalloc code concurrently.
   unsafe { Number::PurgeDelay.set(0) };
   if std::env::var_os(evix::WORKER_ENV).is_some() {

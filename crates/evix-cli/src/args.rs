@@ -17,7 +17,7 @@ const PACK_SEP: char = '\x1f';
 
 #[derive(Parse)]
 #[pound(name = "evix")]
-struct Cli {
+pub(crate) struct Cli {
   #[pound(short, long, count, global)]
   verbose: u8,
 
