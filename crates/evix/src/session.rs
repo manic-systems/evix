@@ -2,16 +2,18 @@ use std::{
   future::Future,
   sync::{
     Arc,
-    Mutex,
     atomic::{AtomicBool, Ordering},
   },
 };
 
 use futures_channel::mpsc as futures_mpsc;
 use futures_core::Stream;
-use futures_util::SinkExt as _;
+use futures_util::{Sink, SinkExt as _};
 use misstep::{Result as ReportResult, report};
-use tokio::sync::{Notify, RwLock};
+use tokio::{
+  runtime::Handle,
+  sync::{Notify, RwLock},
+};
 use tracing::{debug, error};
 
 use crate::{
@@ -41,14 +43,7 @@ pub struct Session {
   cancel:    Arc<AtomicBool>,
   state:     Arc<RwLock<WarmState>>,
   completed: Arc<Notify>,
-  initial:   Arc<Mutex<InitialEvaluation>>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InitialEvaluation {
-  Idle,
-  Running,
-  Finished,
+  started:   AtomicBool,
 }
 
 impl Session {
@@ -59,7 +54,7 @@ impl Session {
       cancel: Arc::new(AtomicBool::new(false)),
       state: Arc::new(RwLock::new(WarmState::default())),
       completed: Arc::new(Notify::new()),
-      initial: Arc::new(Mutex::new(InitialEvaluation::Idle)),
+      started: AtomicBool::new(false),
     })
   }
 
@@ -69,64 +64,12 @@ impl Session {
   /// derivation graph for snapshot queries.
   pub fn stream(&self) -> impl Stream<Item = Result<Event>> + '_ {
     let (tx, rx) = futures_mpsc::unbounded();
-
-    if !self.start_initial_evaluation() {
-      let _ = tx.unbounded_send(Err(self.initial_unavailable_error()));
-      return rx;
-    }
-
-    let config = self.config.clone();
-    let cancel = Arc::clone(&self.cancel);
-    let state = Arc::clone(&self.state);
-    let completed = Arc::clone(&self.completed);
-    let initial = Arc::clone(&self.initial);
-    let spawn_state = Arc::clone(&state);
-    let spawn_completed = Arc::clone(&completed);
-    let spawn_initial = Arc::clone(&initial);
-
-    spawn_session_task(
-      tx.clone(),
-      async move {
-        let event_tx = tx.clone();
-        match evaluate_initial(
-          config,
-          cancel,
-          Arc::clone(&state),
-          Arc::clone(&completed),
-          move |event| {
-            let event_tx = event_tx.clone();
-            async move {
-              event_tx
-                .unbounded_send(Ok(event))
-                .map_err(|_| report!("session stream receiver was dropped"))
-            }
-          },
-        )
-        .await
-        {
-          Ok(RunOutcome::Completed) => finish_initial_evaluation(&initial),
-          Ok(RunOutcome::Cancelled) => {
-            record_initial_error(
-              &state,
-              &completed,
-              &initial,
-              Error::Cancelled.to_string(),
-            )
-            .await;
-            let _ = tx.unbounded_send(Err(Error::Cancelled));
-          },
-          Err(err) => {
-            let message = err.to_string();
-            record_initial_error(&state, &completed, &initial, message).await;
-            let _ = tx.unbounded_send(Err(Error::from(err)));
-          },
-        }
+    match self.event_stream_runtime() {
+      Ok(handle) => self.spawn_event_stream(&handle, tx),
+      Err(err) => {
+        let _ = tx.unbounded_send(Err(err));
       },
-      spawn_state,
-      spawn_completed,
-      spawn_initial,
-    );
-
+    }
     rx
   }
 
@@ -139,66 +82,48 @@ impl Session {
     capacity: usize,
   ) -> impl Stream<Item = Result<Event>> + '_ {
     let (mut tx, rx) = futures_mpsc::channel(bounded_capacity(capacity));
-
-    if !self.start_initial_evaluation() {
-      let _ = tx.try_send(Err(self.initial_unavailable_error()));
-      return rx;
+    match self.event_stream_runtime() {
+      Ok(handle) => self.spawn_event_stream(&handle, tx),
+      Err(err) => {
+        let _ = tx.try_send(Err(err));
+      },
     }
+    rx
+  }
 
+  fn event_stream_runtime(&self) -> Result<Handle> {
+    if self.start_initial_evaluation() {
+      self.stream_runtime()
+    } else {
+      Err(self.initial_unavailable_error())
+    }
+  }
+
+  fn spawn_event_stream<S>(&self, handle: &Handle, mut tx: S)
+  where
+    S: Sink<Result<Event>> + Clone + Send + Unpin + 'static,
+  {
     let config = self.config.clone();
     let cancel = Arc::clone(&self.cancel);
     let state = Arc::clone(&self.state);
     let completed = Arc::clone(&self.completed);
-    let initial = Arc::clone(&self.initial);
-    let spawn_state = Arc::clone(&state);
-    let spawn_completed = Arc::clone(&completed);
-    let spawn_initial = Arc::clone(&initial);
-
-    spawn_session_task_bounded(
-      tx.clone(),
-      async move {
-        let event_tx = tx.clone();
-        match evaluate_initial(
-          config,
-          cancel,
-          Arc::clone(&state),
-          Arc::clone(&completed),
-          move |event| {
-            let mut event_tx = event_tx.clone();
-            async move {
-              event_tx
-                .send(Ok(event))
-                .await
-                .map_err(|_| report!("session stream receiver was dropped"))
-            }
-          },
-        )
+    handle.spawn(async move {
+      let event_tx = tx.clone();
+      if let Err(err) =
+        evaluate_initial(config, cancel, state, completed, move |event| {
+          let mut event_tx = event_tx.clone();
+          async move {
+            event_tx
+              .send(Ok(event))
+              .await
+              .map_err(|_| report!("session stream receiver was dropped"))
+          }
+        })
         .await
-        {
-          Ok(RunOutcome::Completed) => finish_initial_evaluation(&initial),
-          Ok(RunOutcome::Cancelled) => {
-            record_initial_error(
-              &state,
-              &completed,
-              &initial,
-              Error::Cancelled.to_string(),
-            )
-            .await;
-            let _ = tx.send(Err(Error::Cancelled)).await;
-          },
-          Err(err) => {
-            let message = err.to_string();
-            record_initial_error(&state, &completed, &initial, message).await;
-            let _ = tx.send(Err(Error::from(err))).await;
-          },
-        }
-      },
-      spawn_state,
-      spawn_completed,
-      spawn_initial,
-    );
-
-    rx
+      {
+        let _ = tx.send(Err(err)).await;
+      }
+    });
   }
 
   /// Stream diffs as inputs change.
@@ -208,61 +133,13 @@ impl Session {
   /// the previous warm graph.
   pub fn watch(&self) -> impl Stream<Item = Result<Diff>> + '_ {
     let (tx, rx) = futures_mpsc::unbounded();
-    let config = self.config.clone();
-    let cancel = Arc::clone(&self.cancel);
-    let state = Arc::clone(&self.state);
-    let completed = Arc::clone(&self.completed);
-    let initial = Arc::clone(&self.initial);
     let start_initial = self.start_initial_evaluation();
-    let spawn_state = Arc::clone(&state);
-    let spawn_completed = Arc::clone(&completed);
-    let spawn_initial = Arc::clone(&initial);
-
-    spawn_session_task(
-      tx.clone(),
-      async move {
-        if start_initial {
-          match evaluate_initial(
-            config.clone(),
-            Arc::clone(&cancel),
-            Arc::clone(&state),
-            Arc::clone(&completed),
-            |_| async { Ok(()) },
-          )
-          .await
-          {
-            Ok(RunOutcome::Completed) => finish_initial_evaluation(&initial),
-            Ok(RunOutcome::Cancelled) => {
-              record_initial_error(
-                &state,
-                &completed,
-                &initial,
-                Error::Cancelled.to_string(),
-              )
-              .await;
-              let _ = tx.unbounded_send(Err(Error::Cancelled));
-              return;
-            },
-            Err(err) => {
-              let message = err.to_string();
-              record_initial_error(&state, &completed, &initial, message).await;
-              let _ = tx.unbounded_send(Err(Error::from(err)));
-              return;
-            },
-          }
-        }
-
-        if let Err(err) =
-          watch::watch_loop(config, cancel, state, completed, tx.clone()).await
-        {
-          let _ = tx.unbounded_send(Err(Error::from(err)));
-        }
+    match self.stream_runtime() {
+      Ok(handle) => self.spawn_watch_stream(&handle, start_initial, tx),
+      Err(err) => {
+        let _ = tx.unbounded_send(Err(err));
       },
-      spawn_state,
-      spawn_completed,
-      spawn_initial,
-    );
-
+    }
     rx
   }
 
@@ -275,68 +152,49 @@ impl Session {
     capacity: usize,
   ) -> impl Stream<Item = Result<Diff>> + '_ {
     let (mut tx, rx) = futures_mpsc::channel(bounded_capacity(capacity));
+    let start_initial = self.start_initial_evaluation();
+    match self.stream_runtime() {
+      Ok(handle) => self.spawn_watch_stream(&handle, start_initial, tx),
+      Err(err) => {
+        let _ = tx.try_send(Err(err));
+      },
+    }
+    rx
+  }
+
+  fn spawn_watch_stream<S>(
+    &self,
+    handle: &Handle,
+    start_initial: bool,
+    mut tx: S,
+  ) where
+    S: Sink<Result<Diff>> + Clone + Send + Unpin + 'static,
+  {
     let config = self.config.clone();
     let cancel = Arc::clone(&self.cancel);
     let state = Arc::clone(&self.state);
     let completed = Arc::clone(&self.completed);
-    let initial = Arc::clone(&self.initial);
-    let start_initial = self.start_initial_evaluation();
-    let spawn_state = Arc::clone(&state);
-    let spawn_completed = Arc::clone(&completed);
-    let spawn_initial = Arc::clone(&initial);
-
-    spawn_session_task_bounded(
-      tx.clone(),
-      async move {
-        if start_initial {
-          match evaluate_initial(
-            config.clone(),
-            Arc::clone(&cancel),
-            Arc::clone(&state),
-            Arc::clone(&completed),
-            |_| async { Ok(()) },
-          )
-          .await
-          {
-            Ok(RunOutcome::Completed) => finish_initial_evaluation(&initial),
-            Ok(RunOutcome::Cancelled) => {
-              record_initial_error(
-                &state,
-                &completed,
-                &initial,
-                Error::Cancelled.to_string(),
-              )
-              .await;
-              let _ = tx.send(Err(Error::Cancelled)).await;
-              return;
-            },
-            Err(err) => {
-              let message = err.to_string();
-              record_initial_error(&state, &completed, &initial, message).await;
-              let _ = tx.send(Err(Error::from(err))).await;
-              return;
-            },
-          }
-        }
-
-        if let Err(err) = watch::watch_loop_bounded(
-          config,
-          cancel,
-          state,
-          completed,
-          tx.clone(),
+    handle.spawn(async move {
+      if start_initial
+        && let Err(err) = evaluate_initial(
+          config.clone(),
+          Arc::clone(&cancel),
+          Arc::clone(&state),
+          Arc::clone(&completed),
+          |_| async { Ok(()) },
         )
         .await
-        {
-          let _ = tx.send(Err(Error::from(err))).await;
-        }
-      },
-      spawn_state,
-      spawn_completed,
-      spawn_initial,
-    );
+      {
+        let _ = tx.send(Err(err)).await;
+        return;
+      }
 
-    rx
+      if let Err(err) =
+        watch::watch_loop(config, cancel, state, completed, tx.clone()).await
+      {
+        let _ = tx.send(Err(Error::from(err))).await;
+      }
+    });
   }
 
   /// Query a snapshot of the warm derivation graph.
@@ -429,17 +287,20 @@ impl Session {
   }
 
   fn start_initial_evaluation(&self) -> bool {
-    let mut initial = self
-      .initial
-      .lock()
-      .expect("session initial evaluation state poisoned");
-    match *initial {
-      InitialEvaluation::Idle => {
-        *initial = InitialEvaluation::Running;
-        true
-      },
-      InitialEvaluation::Running | InitialEvaluation::Finished => false,
-    }
+    !self.started.swap(true, Ordering::Relaxed)
+  }
+
+  fn stream_runtime(&self) -> Result<Handle> {
+    Handle::try_current().map_err(|_| {
+      let message = "Session streams require an active Tokio runtime";
+      if let Ok(mut state) = self.state.try_write() {
+        state.error = Some(message.into());
+      }
+      self.completed.notify_waiters();
+      Error::RuntimeUnavailable {
+        message: message.into(),
+      }
+    })
   }
 
   fn initial_unavailable_error(&self) -> Error {
@@ -460,15 +321,13 @@ async fn evaluate_initial<F, Fut>(
   state: Arc<RwLock<WarmState>>,
   completed: Arc<Notify>,
   on_event: F,
-) -> ReportResult<RunOutcome>
+) -> Result<()>
 where
   F: FnMut(Event) -> Fut + Send + 'static,
   Fut: Future<Output = ReportResult<()>>,
 {
   debug!("starting session evaluation");
-  let result = run::evaluate_async(config, Arc::clone(&cancel), on_event).await;
-
-  match result {
+  let error = match run::evaluate_async(config, cancel, on_event).await {
     Ok((graph, errors, RunOutcome::Completed)) => {
       let mut state = state.write().await;
       state.graph = graph;
@@ -477,91 +336,21 @@ where
       state.error = None;
       completed.notify_waiters();
       debug!("session evaluation completed");
-      Ok(RunOutcome::Completed)
+      return Ok(());
     },
     Ok((_, _, RunOutcome::Cancelled)) => {
-      // The accumulated graph is partial; leave the warm state untouched so
-      // queries keep failing with "initial evaluation incomplete" instead of
-      // silently serving a truncated graph.
+      // Never publish a partial graph on cancellation.
       debug!("session evaluation cancelled");
-      completed.notify_waiters();
-      Ok(RunOutcome::Cancelled)
+      Error::Cancelled
     },
     Err(err) => {
       error!(error = %err, "session evaluation failed");
-      state.write().await.error = Some(err.to_string());
-      completed.notify_waiters();
-      Err(err)
+      Error::from(err)
     },
-  }
-}
-
-fn finish_initial_evaluation(initial: &Mutex<InitialEvaluation>) {
-  *initial
-    .lock()
-    .expect("session initial evaluation state poisoned") =
-    InitialEvaluation::Finished;
-}
-
-async fn record_initial_error(
-  state: &RwLock<WarmState>,
-  completed: &Notify,
-  initial: &Mutex<InitialEvaluation>,
-  error: String,
-) {
-  state.write().await.error = Some(error);
+  };
+  state.write().await.error = Some(error.to_string());
   completed.notify_waiters();
-  finish_initial_evaluation(initial);
-}
-
-fn spawn_session_task<T: Send + 'static>(
-  tx: futures_mpsc::UnboundedSender<Result<T>>,
-  future: impl Future<Output = ()> + Send + 'static,
-  state: Arc<RwLock<WarmState>>,
-  completed: Arc<Notify>,
-  initial: Arc<Mutex<InitialEvaluation>>,
-) {
-  match tokio::runtime::Handle::try_current() {
-    Ok(handle) => {
-      handle.spawn(future);
-    },
-    Err(_) => {
-      let message = "Session streams require an active Tokio runtime";
-      if let Ok(mut state) = state.try_write() {
-        state.error = Some(message.into());
-      }
-      finish_initial_evaluation(&initial);
-      completed.notify_waiters();
-      let _ = tx.unbounded_send(Err(Error::RuntimeUnavailable {
-        message: message.into(),
-      }));
-    },
-  }
-}
-
-fn spawn_session_task_bounded<T: Send + 'static>(
-  mut tx: futures_mpsc::Sender<Result<T>>,
-  future: impl Future<Output = ()> + Send + 'static,
-  state: Arc<RwLock<WarmState>>,
-  completed: Arc<Notify>,
-  initial: Arc<Mutex<InitialEvaluation>>,
-) {
-  match tokio::runtime::Handle::try_current() {
-    Ok(handle) => {
-      handle.spawn(future);
-    },
-    Err(_) => {
-      let message = "Session streams require an active Tokio runtime";
-      if let Ok(mut state) = state.try_write() {
-        state.error = Some(message.into());
-      }
-      finish_initial_evaluation(&initial);
-      completed.notify_waiters();
-      let _ = tx.try_send(Err(Error::RuntimeUnavailable {
-        message: message.into(),
-      }));
-    },
-  }
+  Err(error)
 }
 
 fn bounded_capacity(capacity: usize) -> usize {
@@ -583,35 +372,35 @@ mod tests {
   use super::*;
 
   #[test]
-  fn spawn_without_runtime_records_initial_error() {
-    let (tx, _rx): (futures_mpsc::UnboundedSender<Result<Event>>, _) =
-      futures_mpsc::unbounded();
-    let state = Arc::new(RwLock::new(WarmState::default()));
-    let completed = Arc::new(Notify::new());
-    let initial = Arc::new(Mutex::new(InitialEvaluation::Running));
+  fn missing_runtime_marks_evaluation_failed() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+      .build()
+      .unwrap();
+    let unbounded_session =
+      runtime.block_on(Session::open(Config::default())).unwrap();
+    let bounded_session =
+      runtime.block_on(Session::open(Config::default())).unwrap();
 
-    spawn_session_task(
-      tx,
-      async {},
-      Arc::clone(&state),
-      Arc::clone(&completed),
-      Arc::clone(&initial),
-    );
-
-    assert_eq!(
-      *initial
-        .lock()
-        .expect("session initial evaluation state poisoned"),
-      InitialEvaluation::Finished
-    );
-    assert_eq!(
-      state
-        .try_read()
-        .expect("warm state should not be locked")
-        .error
-        .as_deref(),
-      Some("Session streams require an active Tokio runtime")
-    );
+    // Stream creation, not consumption, requires the runtime.
+    let mut unbounded_stream = unbounded_session.stream();
+    let mut bounded_stream =
+      bounded_session.stream_bounded(crate::DEFAULT_STREAM_BUFFER_CAPACITY);
+    runtime.block_on(async {
+      for startup_result in
+        [unbounded_stream.next().await, bounded_stream.next().await]
+      {
+        assert!(matches!(
+          startup_result,
+          Some(Err(Error::RuntimeUnavailable { .. }))
+        ));
+      }
+      for session in [&unbounded_session, &bounded_session] {
+        assert!(matches!(
+          session.stream().next().await,
+          Some(Err(Error::EvaluationFailed { .. }))
+        ));
+      }
+    });
   }
 
   #[test]
@@ -671,7 +460,7 @@ mod tests {
       cancel:    Arc::new(AtomicBool::new(false)),
       state:     Arc::new(RwLock::new(WarmState::default())),
       completed: Arc::new(Notify::new()),
-      initial:   Arc::new(Mutex::new(InitialEvaluation::Finished)),
+      started:   AtomicBool::new(true),
     };
     let mut stream = Box::pin(session.stream());
 
@@ -691,7 +480,7 @@ mod tests {
       cancel:    Arc::new(AtomicBool::new(false)),
       state:     Arc::new(RwLock::new(WarmState::default())),
       completed: Arc::new(Notify::new()),
-      initial:   Arc::new(Mutex::new(InitialEvaluation::Finished)),
+      started:   AtomicBool::new(true),
     };
     let mut stream = Box::pin(session.stream_bounded(1));
 
@@ -714,7 +503,7 @@ mod tests {
       cancel:    Arc::new(AtomicBool::new(false)),
       state:     Arc::new(RwLock::new(WarmState::default())),
       completed: Arc::new(Notify::new()),
-      initial:   Arc::new(Mutex::new(InitialEvaluation::Idle)),
+      started:   AtomicBool::new(false),
     };
 
     session.cancel();

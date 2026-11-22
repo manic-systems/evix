@@ -2,7 +2,7 @@
 // DO NOT EDIT.
 // source: worker.capnp
 // capnp binary version: 1.4.0
-// capnpc crate version: 0.27.0
+// capnpc crate version: 0.28.1
 
 
 pub mod client_message {
@@ -56,7 +56,7 @@ pub mod client_message {
 
     impl <'a,> ::capnp::traits::Imbue<'a> for Reader<'a,>  {
         fn imbue(&mut self, cap_table: &'a ::capnp::private::layout::CapTable) {
-            self.reader.imbue(::capnp::private::layout::CapTableReader::from_ref(cap_table))
+            self.reader.imbue(cap_table)
         }
     }
 
@@ -122,7 +122,7 @@ pub mod client_message {
 
     impl <'a,> ::capnp::traits::ImbueMut<'a> for Builder<'a,>  {
         fn imbue_mut(&mut self, cap_table: &'a mut ::capnp::private::layout::CapTable) {
-            self.builder.imbue(::capnp::private::layout::CapTableBuilder::from_ref(cap_table))
+            self.builder.imbue(cap_table)
         }
     }
 
@@ -367,7 +367,7 @@ pub mod setup {
 
     impl <'a,> ::capnp::traits::Imbue<'a> for Reader<'a,>  {
         fn imbue(&mut self, cap_table: &'a ::capnp::private::layout::CapTable) {
-            self.reader.imbue(::capnp::private::layout::CapTableReader::from_ref(cap_table))
+            self.reader.imbue(cap_table)
         }
     }
 
@@ -430,7 +430,7 @@ pub mod setup {
 
     impl <'a,> ::capnp::traits::ImbueMut<'a> for Builder<'a,>  {
         fn imbue_mut(&mut self, cap_table: &'a mut ::capnp::private::layout::CapTable) {
-            self.builder.imbue(::capnp::private::layout::CapTableBuilder::from_ref(cap_table))
+            self.builder.imbue(cap_table)
         }
     }
 
@@ -695,7 +695,7 @@ pub mod work {
 
     impl <'a,> ::capnp::traits::Imbue<'a> for Reader<'a,>  {
         fn imbue(&mut self, cap_table: &'a ::capnp::private::layout::CapTable) {
-            self.reader.imbue(::capnp::private::layout::CapTableReader::from_ref(cap_table))
+            self.reader.imbue(cap_table)
         }
     }
 
@@ -738,7 +738,7 @@ pub mod work {
 
     impl <'a,> ::capnp::traits::ImbueMut<'a> for Builder<'a,>  {
         fn imbue_mut(&mut self, cap_table: &'a mut ::capnp::private::layout::CapTable) {
-            self.builder.imbue(::capnp::private::layout::CapTableBuilder::from_ref(cap_table))
+            self.builder.imbue(cap_table)
         }
     }
 
@@ -910,7 +910,7 @@ pub mod server_message {
 
     impl <'a,> ::capnp::traits::Imbue<'a> for Reader<'a,>  {
         fn imbue(&mut self, cap_table: &'a ::capnp::private::layout::CapTable) {
-            self.reader.imbue(::capnp::private::layout::CapTableReader::from_ref(cap_table))
+            self.reader.imbue(cap_table)
         }
     }
 
@@ -981,7 +981,7 @@ pub mod server_message {
 
     impl <'a,> ::capnp::traits::ImbueMut<'a> for Builder<'a,>  {
         fn imbue_mut(&mut self, cap_table: &'a mut ::capnp::private::layout::CapTable) {
-            self.builder.imbue(::capnp::private::layout::CapTableBuilder::from_ref(cap_table))
+            self.builder.imbue(cap_table)
         }
     }
 
@@ -1318,7 +1318,7 @@ pub mod worker_config {
 
     impl <'a,> ::capnp::traits::Imbue<'a> for Reader<'a,>  {
         fn imbue(&mut self, cap_table: &'a ::capnp::private::layout::CapTable) {
-            self.reader.imbue(::capnp::private::layout::CapTableReader::from_ref(cap_table))
+            self.reader.imbue(cap_table)
         }
     }
 
@@ -1421,7 +1421,7 @@ pub mod worker_config {
 
     impl <'a,> ::capnp::traits::ImbueMut<'a> for Builder<'a,>  {
         fn imbue_mut(&mut self, cap_table: &'a mut ::capnp::private::layout::CapTable) {
-            self.builder.imbue(::capnp::private::layout::CapTableBuilder::from_ref(cap_table))
+            self.builder.imbue(cap_table)
         }
     }
 
@@ -1900,7 +1900,7 @@ pub mod input {
 
     impl <'a,> ::capnp::traits::Imbue<'a> for Reader<'a,>  {
         fn imbue(&mut self, cap_table: &'a ::capnp::private::layout::CapTable) {
-            self.reader.imbue(::capnp::private::layout::CapTableReader::from_ref(cap_table))
+            self.reader.imbue(cap_table)
         }
     }
 
@@ -1971,7 +1971,7 @@ pub mod input {
 
     impl <'a,> ::capnp::traits::ImbueMut<'a> for Builder<'a,>  {
         fn imbue_mut(&mut self, cap_table: &'a mut ::capnp::private::layout::CapTable) {
-            self.builder.imbue(::capnp::private::layout::CapTableBuilder::from_ref(cap_table))
+            self.builder.imbue(cap_table)
         }
     }
 
@@ -2227,7 +2227,7 @@ pub mod auto_arg {
 
     impl <'a,> ::capnp::traits::Imbue<'a> for Reader<'a,>  {
         fn imbue(&mut self, cap_table: &'a ::capnp::private::layout::CapTable) {
-            self.reader.imbue(::capnp::private::layout::CapTableReader::from_ref(cap_table))
+            self.reader.imbue(cap_table)
         }
     }
 
@@ -2296,7 +2296,7 @@ pub mod auto_arg {
 
     impl <'a,> ::capnp::traits::ImbueMut<'a> for Builder<'a,>  {
         fn imbue_mut(&mut self, cap_table: &'a mut ::capnp::private::layout::CapTable) {
-            self.builder.imbue(::capnp::private::layout::CapTableBuilder::from_ref(cap_table))
+            self.builder.imbue(cap_table)
         }
     }
 
@@ -2545,7 +2545,7 @@ pub mod string_pair {
 
     impl <'a,> ::capnp::traits::Imbue<'a> for Reader<'a,>  {
         fn imbue(&mut self, cap_table: &'a ::capnp::private::layout::CapTable) {
-            self.reader.imbue(::capnp::private::layout::CapTableReader::from_ref(cap_table))
+            self.reader.imbue(cap_table)
         }
     }
 
@@ -2596,7 +2596,7 @@ pub mod string_pair {
 
     impl <'a,> ::capnp::traits::ImbueMut<'a> for Builder<'a,>  {
         fn imbue_mut(&mut self, cap_table: &'a mut ::capnp::private::layout::CapTable) {
-            self.builder.imbue(::capnp::private::layout::CapTableBuilder::from_ref(cap_table))
+            self.builder.imbue(cap_table)
         }
     }
 
@@ -2795,7 +2795,7 @@ pub mod text_opt {
 
     impl <'a,> ::capnp::traits::Imbue<'a> for Reader<'a,>  {
         fn imbue(&mut self, cap_table: &'a ::capnp::private::layout::CapTable) {
-            self.reader.imbue(::capnp::private::layout::CapTableReader::from_ref(cap_table))
+            self.reader.imbue(cap_table)
         }
     }
 
@@ -2851,7 +2851,7 @@ pub mod text_opt {
 
     impl <'a,> ::capnp::traits::ImbueMut<'a> for Builder<'a,>  {
         fn imbue_mut(&mut self, cap_table: &'a mut ::capnp::private::layout::CapTable) {
-            self.builder.imbue(::capnp::private::layout::CapTableBuilder::from_ref(cap_table))
+            self.builder.imbue(cap_table)
         }
     }
 
@@ -3059,7 +3059,7 @@ pub mod event {
 
     impl <'a,> ::capnp::traits::Imbue<'a> for Reader<'a,>  {
         fn imbue(&mut self, cap_table: &'a ::capnp::private::layout::CapTable) {
-            self.reader.imbue(::capnp::private::layout::CapTableReader::from_ref(cap_table))
+            self.reader.imbue(cap_table)
         }
     }
 
@@ -3130,7 +3130,7 @@ pub mod event {
 
     impl <'a,> ::capnp::traits::ImbueMut<'a> for Builder<'a,>  {
         fn imbue_mut(&mut self, cap_table: &'a mut ::capnp::private::layout::CapTable) {
-            self.builder.imbue(::capnp::private::layout::CapTableBuilder::from_ref(cap_table))
+            self.builder.imbue(cap_table)
         }
     }
 
@@ -3385,7 +3385,7 @@ pub mod attr_set {
 
     impl <'a,> ::capnp::traits::Imbue<'a> for Reader<'a,>  {
         fn imbue(&mut self, cap_table: &'a ::capnp::private::layout::CapTable) {
-            self.reader.imbue(::capnp::private::layout::CapTableReader::from_ref(cap_table))
+            self.reader.imbue(cap_table)
         }
     }
 
@@ -3444,7 +3444,7 @@ pub mod attr_set {
 
     impl <'a,> ::capnp::traits::ImbueMut<'a> for Builder<'a,>  {
         fn imbue_mut(&mut self, cap_table: &'a mut ::capnp::private::layout::CapTable) {
-            self.builder.imbue(::capnp::private::layout::CapTableBuilder::from_ref(cap_table))
+            self.builder.imbue(cap_table)
         }
     }
 
@@ -3682,7 +3682,7 @@ pub mod derivation {
 
     impl <'a,> ::capnp::traits::Imbue<'a> for Reader<'a,>  {
         fn imbue(&mut self, cap_table: &'a ::capnp::private::layout::CapTable) {
-            self.reader.imbue(::capnp::private::layout::CapTableReader::from_ref(cap_table))
+            self.reader.imbue(cap_table)
         }
     }
 
@@ -3797,7 +3797,7 @@ pub mod derivation {
 
     impl <'a,> ::capnp::traits::ImbueMut<'a> for Builder<'a,>  {
         fn imbue_mut(&mut self, cap_table: &'a mut ::capnp::private::layout::CapTable) {
-            self.builder.imbue(::capnp::private::layout::CapTableBuilder::from_ref(cap_table))
+            self.builder.imbue(cap_table)
         }
     }
 
@@ -4278,7 +4278,7 @@ pub mod output {
 
     impl <'a,> ::capnp::traits::Imbue<'a> for Reader<'a,>  {
         fn imbue(&mut self, cap_table: &'a ::capnp::private::layout::CapTable) {
-            self.reader.imbue(::capnp::private::layout::CapTableReader::from_ref(cap_table))
+            self.reader.imbue(cap_table)
         }
     }
 
@@ -4342,7 +4342,7 @@ pub mod output {
 
     impl <'a,> ::capnp::traits::ImbueMut<'a> for Builder<'a,>  {
         fn imbue_mut(&mut self, cap_table: &'a mut ::capnp::private::layout::CapTable) {
-            self.builder.imbue(::capnp::private::layout::CapTableBuilder::from_ref(cap_table))
+            self.builder.imbue(cap_table)
         }
     }
 
@@ -4580,7 +4580,7 @@ pub mod input_drv {
 
     impl <'a,> ::capnp::traits::Imbue<'a> for Reader<'a,>  {
         fn imbue(&mut self, cap_table: &'a ::capnp::private::layout::CapTable) {
-            self.reader.imbue(::capnp::private::layout::CapTableReader::from_ref(cap_table))
+            self.reader.imbue(cap_table)
         }
     }
 
@@ -4631,7 +4631,7 @@ pub mod input_drv {
 
     impl <'a,> ::capnp::traits::ImbueMut<'a> for Builder<'a,>  {
         fn imbue_mut(&mut self, cap_table: &'a mut ::capnp::private::layout::CapTable) {
-            self.builder.imbue(::capnp::private::layout::CapTableBuilder::from_ref(cap_table))
+            self.builder.imbue(cap_table)
         }
     }
 
@@ -4831,7 +4831,7 @@ pub mod text_list_opt {
 
     impl <'a,> ::capnp::traits::Imbue<'a> for Reader<'a,>  {
         fn imbue(&mut self, cap_table: &'a ::capnp::private::layout::CapTable) {
-            self.reader.imbue(::capnp::private::layout::CapTableReader::from_ref(cap_table))
+            self.reader.imbue(cap_table)
         }
     }
 
@@ -4887,7 +4887,7 @@ pub mod text_list_opt {
 
     impl <'a,> ::capnp::traits::ImbueMut<'a> for Builder<'a,>  {
         fn imbue_mut(&mut self, cap_table: &'a mut ::capnp::private::layout::CapTable) {
-            self.builder.imbue(::capnp::private::layout::CapTableBuilder::from_ref(cap_table))
+            self.builder.imbue(cap_table)
         }
     }
 
@@ -5098,7 +5098,7 @@ pub mod eval_error {
 
     impl <'a,> ::capnp::traits::Imbue<'a> for Reader<'a,>  {
         fn imbue(&mut self, cap_table: &'a ::capnp::private::layout::CapTable) {
-            self.reader.imbue(::capnp::private::layout::CapTableReader::from_ref(cap_table))
+            self.reader.imbue(cap_table)
         }
     }
 
@@ -5161,7 +5161,7 @@ pub mod eval_error {
 
     impl <'a,> ::capnp::traits::ImbueMut<'a> for Builder<'a,>  {
         fn imbue_mut(&mut self, cap_table: &'a mut ::capnp::private::layout::CapTable) {
-            self.builder.imbue(::capnp::private::layout::CapTableBuilder::from_ref(cap_table))
+            self.builder.imbue(cap_table)
         }
     }
 

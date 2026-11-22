@@ -8,7 +8,8 @@ use std::{
   sync::Arc,
 };
 
-use misstep::{OptionExt as _, Result, ResultExt as _, bail};
+#[cfg(feature = "flake")] use misstep::OptionExt as _;
+use misstep::{Result, ResultExt as _, bail};
 use nix_bindings::{Context, EvalState, EvalStateBuilder, Store, Value};
 use tracing::{debug, trace, warn};
 

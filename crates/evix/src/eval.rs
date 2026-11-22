@@ -20,10 +20,9 @@ const MAX_ATTR_DEPTH: usize = 64;
 
 /// Maps a derivation to `{ <output> = <store path>; }`.
 ///
-/// Discarding the string context lets the paths be read without realising
-/// them, so outputs come from the evaluated value instead of reading the `.drv`
-/// back from the store.
-const OUTPUT_PATHS_EXPR: &str = r#"
+/// The Nix helper keeps outPath's coercion for custom derivations;
+/// the raw Rust accessor reads it without realizing an output.
+const OUTPUT_PATHS_EXPR: &std::ffi::CStr = cr#"
   drv: builtins.listToAttrs (map (name: {
     inherit name;
     value = builtins.unsafeDiscardStringContext drv.${name}.outPath;
@@ -47,7 +46,7 @@ pub(crate) struct EvalHelpers<'s> {
 impl<'s> EvalHelpers<'s> {
   pub(crate) fn new(state: &'s EvalState, store: &Store) -> Result<Self> {
     let output_paths = state
-      .eval_from_string(OUTPUT_PATHS_EXPR, "<evix>")
+      .eval_from_cstr(OUTPUT_PATHS_EXPR, c"<evix>")
       .context("evaluating output path helper")?;
     Ok(Self {
       output_paths,
@@ -447,7 +446,7 @@ fn value_output_paths(
   let prefix = format!("{}/", helpers.store_dir);
   let mut map = BTreeMap::new();
   for name in paths.attr_keys()? {
-    let path = paths.get_attr(&name)?.as_string()?;
+    let path = paths.get_attr(&name)?.as_raw_string()?;
     map.insert(name, path.starts_with(&prefix).then_some(path));
   }
   Ok(map)
@@ -455,8 +454,7 @@ fn value_output_paths(
 
 /// Read each output's store path from the derivation's `.drv`.
 ///
-/// `outPath` carries derivation context, and the only string accessor the C API
-/// exposes realises it, which tries to build the derivation and fails.
+/// Fallback when the evaluated value does not expose readable output paths.
 ///
 /// # Returns
 ///

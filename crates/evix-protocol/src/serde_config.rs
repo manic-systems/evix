@@ -9,10 +9,10 @@ pub mod input {
 
   #[derive(Serialize, Deserialize)]
   #[serde(tag = "type", rename_all = "camelCase")]
-  enum InputWire {
-    Flake { value: String },
-    Expr { value: String },
-    File { path: PathBuf },
+  enum InputWire<V, P> {
+    Flake { value: V },
+    Expr { value: V },
+    File { path: P },
   }
 
   pub fn serialize<S>(input: &Input, serializer: S) -> Result<S::Ok, S::Error>
@@ -20,17 +20,9 @@ pub mod input {
     S: Serializer,
   {
     let wire = match input {
-      Input::Flake(value) => {
-        InputWire::Flake {
-          value: value.clone(),
-        }
-      },
-      Input::Expr(value) => {
-        InputWire::Expr {
-          value: value.clone(),
-        }
-      },
-      Input::File(path) => InputWire::File { path: path.clone() },
+      Input::Flake(value) => InputWire::Flake { value },
+      Input::Expr(value) => InputWire::Expr { value },
+      Input::File(path) => InputWire::File { path },
     };
     wire.serialize(serializer)
   }
@@ -39,11 +31,13 @@ pub mod input {
   where
     D: Deserializer<'de>,
   {
-    Ok(match InputWire::deserialize(deserializer)? {
-      InputWire::Flake { value } => Input::Flake(value),
-      InputWire::Expr { value } => Input::Expr(value),
-      InputWire::File { path } => Input::File(path),
-    })
+    Ok(
+      match InputWire::<String, PathBuf>::deserialize(deserializer)? {
+        InputWire::Flake { value } => Input::Flake(value),
+        InputWire::Expr { value } => Input::Expr(value),
+        InputWire::File { path } => Input::File(path),
+      },
+    )
   }
 }
 
@@ -51,10 +45,10 @@ pub mod auto_args {
   use super::*;
 
   #[derive(Serialize, Deserialize)]
-  struct AutoArgWire {
-    name:  String,
+  struct AutoArgWire<T> {
+    name:  T,
     kind:  AutoArgKind,
-    value: String,
+    value: T,
   }
 
   #[derive(Serialize, Deserialize)]
@@ -71,28 +65,13 @@ pub mod auto_args {
   where
     S: Serializer,
   {
-    args
-      .iter()
-      .map(|(name, arg)| {
-        match arg {
-          AutoArg::Expr(value) => {
-            AutoArgWire {
-              name:  name.clone(),
-              kind:  AutoArgKind::Expr,
-              value: value.clone(),
-            }
-          },
-          AutoArg::Str(value) => {
-            AutoArgWire {
-              name:  name.clone(),
-              kind:  AutoArgKind::Str,
-              value: value.clone(),
-            }
-          },
-        }
-      })
-      .collect::<Vec<_>>()
-      .serialize(serializer)
+    serializer.collect_seq(args.iter().map(|(name, arg)| {
+      let (kind, value) = match arg {
+        AutoArg::Expr(value) => (AutoArgKind::Expr, value),
+        AutoArg::Str(value) => (AutoArgKind::Str, value),
+      };
+      AutoArgWire { name, kind, value }
+    }))
   }
 
   pub fn deserialize<'de, D>(
@@ -102,7 +81,7 @@ pub mod auto_args {
     D: Deserializer<'de>,
   {
     Ok(
-      Vec::<AutoArgWire>::deserialize(deserializer)?
+      Vec::<AutoArgWire<String>>::deserialize(deserializer)?
         .into_iter()
         .map(|wire| {
           let arg = match wire.kind {

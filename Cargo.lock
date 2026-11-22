@@ -26,7 +26,7 @@ dependencies = [
  "regex",
  "rustc-hash",
  "shlex",
- "syn 2.0.117",
+ "syn 3.0.0",
 ]
 
 [[package]]
@@ -43,18 +43,18 @@ checksum = "8ae3f5d315924270530207e2a68396c3cc547f6dca3fbdca317cfb1a51edb593"
 
 [[package]]
 name = "capnp"
-version = "0.27.3"
+version = "0.28.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98216f4102645406ce4dbb0d2b3511cae502537885bae5662812ccc1fe6b04e7"
+checksum = "f2f794732484839ded125016536fb1176990fa55c20bc4feab86bce94f746861"
 dependencies = [
  "embedded-io",
 ]
 
 [[package]]
 name = "capnp-futures"
-version = "0.27.1"
+version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3be9d2c64fef701b779960748be8c9d659bcecc6e01ecdd9e636c1d9584690cf"
+checksum = "d7a1575bf43326af7e481f4219a52db27cc9ee47a4c6738a4a2b4ae3221e3399"
 dependencies = [
  "capnp",
  "futures-channel",
@@ -63,9 +63,9 @@ dependencies = [
 
 [[package]]
 name = "capnpc"
-version = "0.27.0"
+version = "0.28.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82ca16312ddb64529d31c8dc46148671c22e57b80134fa5f17811ad5a6a79492"
+checksum = "46e419b5984a8843f3192d7ffa6d51745a872081bbcca7a476e1da4aede7044e"
 dependencies = [
  "capnp",
 ]
@@ -181,7 +181,6 @@ dependencies = [
  "mimalloc-ng",
  "misstep",
  "pound",
- "serde",
  "serde_json",
  "tokio",
  "tracing",
@@ -271,9 +270,9 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "inotify"
-version = "0.11.2"
+version = "0.11.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "533e68a5842e734946fe159fb03fc9bbbb254f590dd0d8ad321ae5ff7beca2c1"
+checksum = "4cc00ea907cab49550b7da656f80ebb97be1b997d931fbcd28d39734e17ce592"
 dependencies = [
  "bitflags",
  "inotify-sys",
@@ -282,9 +281,9 @@ dependencies = [
 
 [[package]]
 name = "inotify-sys"
-version = "0.1.5"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e05c02b5e89bff3b946cedeca278abc628fe811e604f027c45a8aa3cf793d0eb"
+checksum = "c033f80b2c113cdf91ab7a33faa9cbc014726dcad99880c8609af2a370edf37d"
 dependencies = [
  "libc",
 ]
@@ -405,18 +404,18 @@ dependencies = [
 
 [[package]]
 name = "nix-bindings"
-version = "0.2352.0"
+version = "0.2356.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e89334bcd118a5c4bec34b9dc8a5b42ae02d91b2657964f47276d6657d07878"
+checksum = "e6327bf7d91ce73b23db33b0e4063b6e7f89d9ea6401c3aef0197adb419eac78"
 dependencies = [
  "nix-bindings-sys",
 ]
 
 [[package]]
 name = "nix-bindings-sys"
-version = "0.2352.0"
+version = "0.2356.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d70304b34248a78cc9ae3b351683d44b0aea72d58cf6514b623939cab4ecec5a"
+checksum = "4faefdf662548c1114dd08a854f14bf8905d6b3296cbc68b30ddc2e8f3cf1141"
 dependencies = [
  "bindgen",
  "cc",
@@ -436,9 +435,9 @@ dependencies = [
 
 [[package]]
 name = "notify"
-version = "8.2.2"
+version = "9.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c41a04a5f59df9322cc657286dd2d79f90816119b22c5f847607c850110205ab"
+checksum = "5482d5bd11b91a337521980e5d52fe115bdccfb4c217099daaf0abd69159dc4e"
 dependencies = [
  "bitflags",
  "inotify",
@@ -449,15 +448,17 @@ dependencies = [
  "notify-types",
  "objc2-core-foundation",
  "objc2-core-services",
+ "tokio",
  "walkdir",
  "windows-sys",
+ "xxhash-rust",
 ]
 
 [[package]]
 name = "notify-types"
-version = "2.1.0"
+version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42b8cfee0e339a0337359f3c88165702ac6e600dc01c0cc9579a92d62b08477a"
+checksum = "cbd044e85df3d939d8e32a1c35a3b737c7d0a4eeb7acd737bd207644e00f4e5f"
 dependencies = [
  "bitflags",
 ]
@@ -871,6 +872,12 @@ checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
 dependencies = [
  "windows-link",
 ]
+
+[[package]]
+name = "xxhash-rust"
+version = "0.8.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40de123dbb523ebcc00d61ec01840ad192578afc378d859f3429caa38308fad5"
 
 [[package]]
 name = "yansi"

@@ -8,10 +8,9 @@ use std::{
   time::Duration,
 };
 
-use futures_channel::mpsc as futures_mpsc;
-use futures_util::SinkExt as _;
+use futures_util::{Sink, SinkExt as _};
 use misstep::{Result as ReportResult, ResultExt as _, bail, report};
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{RecursiveMode, Watcher};
 use tokio::{
   sync::{Notify, RwLock, mpsc as tokio_mpsc},
   time,
@@ -27,55 +26,18 @@ use crate::{
   state::{EvalGraph, WarmState, diff_graphs},
 };
 
-pub async fn watch_loop(
+pub(crate) async fn watch_loop(
   config: Config,
   cancel: Arc<AtomicBool>,
   state: Arc<RwLock<WarmState>>,
   completed: Arc<Notify>,
-  tx: futures_mpsc::UnboundedSender<crate::Result<Diff>>,
-) -> ReportResult<()> {
-  watch_loop_with_sender(
-    config,
-    cancel,
-    state,
-    completed,
-    WatchSender::Unbounded(tx),
-  )
-  .await
-}
-
-pub async fn watch_loop_bounded(
-  config: Config,
-  cancel: Arc<AtomicBool>,
-  state: Arc<RwLock<WarmState>>,
-  completed: Arc<Notify>,
-  tx: futures_mpsc::Sender<crate::Result<Diff>>,
-) -> ReportResult<()> {
-  watch_loop_with_sender(
-    config,
-    cancel,
-    state,
-    completed,
-    WatchSender::Bounded(tx),
-  )
-  .await
-}
-
-async fn watch_loop_with_sender(
-  config: Config,
-  cancel: Arc<AtomicBool>,
-  state: Arc<RwLock<WarmState>>,
-  completed: Arc<Notify>,
-  mut tx: WatchSender,
+  mut tx: impl Sink<crate::Result<Diff>> + Unpin,
 ) -> ReportResult<()> {
   wait_for_initial_evaluation(&cancel, &state, &completed).await?;
 
   let paths = watched_paths(&config)?;
   let (watch_tx, mut watch_rx) = tokio_mpsc::unbounded_channel();
-  let mut watcher: RecommendedWatcher =
-    notify::recommended_watcher(move |result| {
-      let _ = watch_tx.send(result);
-    })
+  let mut watcher = notify::recommended_watcher(watch_tx)
     .context("creating filesystem watcher")?;
 
   for path in &paths {
@@ -105,7 +67,7 @@ async fn watch_loop_with_sender(
       },
       Ok(Some(Err(err))) => {
         let err = Error::from(report!("filesystem watch error: {err}"));
-        tx.send(Err(err)).await?;
+        send_watch_update(&mut tx, Err(err)).await?;
       },
       Ok(None) => bail!("filesystem watcher disconnected"),
       Err(_) => {},
@@ -125,12 +87,12 @@ async fn apply_watch_evaluation_result(
   result: ReportResult<(EvalGraph, Vec<EvalError>, run::RunOutcome)>,
   previous: EvalGraph,
   state: &RwLock<WarmState>,
-  tx: &mut WatchSender,
+  tx: &mut (impl Sink<crate::Result<Diff>> + Unpin),
 ) -> ReportResult<WatchAction> {
   let (graph, errors, outcome) = match result {
     Ok(result) => result,
     Err(err) => {
-      tx.send(Err(Error::from(err))).await?;
+      send_watch_update(tx, Err(Error::from(err))).await?;
       return Ok(WatchAction::Continue);
     },
   };
@@ -147,29 +109,17 @@ async fn apply_watch_evaluation_result(
     state.completed = true;
     state.error = None;
   }
-  tx.send(Ok(diff)).await?;
+  send_watch_update(tx, Ok(diff)).await?;
   Ok(WatchAction::Continue)
 }
 
-enum WatchSender {
-  Unbounded(futures_mpsc::UnboundedSender<crate::Result<Diff>>),
-  Bounded(futures_mpsc::Sender<crate::Result<Diff>>),
-}
-
-impl WatchSender {
-  async fn send(&mut self, item: crate::Result<Diff>) -> ReportResult<()> {
-    match self {
-      Self::Unbounded(tx) => {
-        tx.unbounded_send(item)
-          .map_err(|_| report!("watch stream receiver was dropped"))
-      },
-      Self::Bounded(tx) => {
-        tx.send(item)
-          .await
-          .map_err(|_| report!("watch stream receiver was dropped"))
-      },
-    }
-  }
+async fn send_watch_update(
+  tx: &mut (impl Sink<crate::Result<Diff>> + Unpin),
+  item: crate::Result<Diff>,
+) -> ReportResult<()> {
+  tx.send(item)
+    .await
+    .map_err(|_| report!("watch stream receiver was dropped"))
 }
 
 async fn wait_for_initial_evaluation(
@@ -285,7 +235,6 @@ mod tests {
 
   use super::{
     WatchAction,
-    WatchSender,
     apply_watch_evaluation_result,
     local_flake_root,
     watched_paths,
@@ -333,8 +282,7 @@ mod tests {
           completed: true,
           ..WarmState::default()
         });
-        let (tx, mut rx) = futures_mpsc::unbounded();
-        let mut tx = WatchSender::Unbounded(tx);
+        let (mut tx, mut rx) = futures_mpsc::unbounded();
 
         let action = apply_watch_evaluation_result(
           Err(misstep::report!("broken eval")),
@@ -370,8 +318,7 @@ mod tests {
           completed: true,
           ..WarmState::default()
         });
-        let (tx, mut rx) = futures_mpsc::channel(1);
-        let mut tx = WatchSender::Bounded(tx);
+        let (mut tx, mut rx) = futures_mpsc::channel(1);
 
         let action = apply_watch_evaluation_result(
           Err(misstep::report!("broken eval")),
