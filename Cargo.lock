@@ -448,6 +448,7 @@ dependencies = [
  "notify-types",
  "objc2-core-foundation",
  "objc2-core-services",
+ "tokio",
  "walkdir",
  "windows-sys",
  "xxhash-rust",
