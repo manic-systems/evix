@@ -1,6 +1,9 @@
 {
   lib,
+  stdenv,
+  buildPackages,
   rustPlatform,
+  installShellFiles,
   glibc,
   nixVersions,
   nixForBindings ? nixVersions.nix_2_35,
@@ -37,6 +40,7 @@ in
     enableParallelBuilding = true;
     strictDeps = true;
     nativeBuildInputs = [
+      installShellFiles
       pkg-config
     ];
 
@@ -49,6 +53,18 @@ in
       LIBCLANG_PATH = "${llvmPackages.libclang.lib}/lib";
       BINDGEN_EXTRA_CLANG_ARGS = "--sysroot=${glibc.dev}";
     };
+
+    postInstall = lib.optionalString (stdenv.hostPlatform.emulatorAvailable buildPackages) (
+      let
+        evix = "${stdenv.hostPlatform.emulator buildPackages} $out/bin/evix";
+      in ''
+        installShellCompletion --cmd evix \
+          --bash    <(COMPLETE=bash ${evix}) \
+          --zsh     <(COMPLETE=zsh  ${evix}) \
+          --fish    <(COMPLETE=fish ${evix}) \
+          --nushell <(COMPLETE=nu   ${evix})
+      ''
+    );
 
     meta = {
       description = "Evaluate a Nix expression and stream derivation info as JSON lines";
