@@ -240,6 +240,19 @@ Like `query`, `diff` requires an existing warm daemon session.
 Logs are written to stderr at `warn` by default. JSON events are written to
 stdout. `RUST_LOG` overrides `--verbose` and `--quiet` when set.
 
+## Shell Completions
+
+The Nix package installs completions for Bash, Zsh, Fish and Nushell. To set
+completions up by hand, source the script evix prints.
+
+| Shell  | Setup                                                    |
+|--------|----------------------------------------------------------|
+| bash   | `source <(COMPLETE=bash evix)`                           |
+| zsh    | `COMPLETE=zsh evix > ~/.zfunc/_evix`, with it in `fpath` |
+| fish   | `COMPLETE=fish evix \| source`                           |
+| nu     | `COMPLETE=nu evix \| save evix.nu`, then `source` it     |
+| elvish | `eval (env COMPLETE=elvish evix \| slurp)`               |
+
 ## Distributed Evaluation
 
 One of the things Evix tries to solve is _distributed_ evaluation. To do this,
